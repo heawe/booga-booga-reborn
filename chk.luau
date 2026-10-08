@@ -8,8 +8,7 @@ local CFG = {
     TOP_N = 3,
     PREVIEW_TIMEOUT = 3.0,
     CARDS_TIMEOUT = 2.0,
-    SEARCH_WAIT = 4.0,
-    SEARCH_RETRY_WAIT = 2.0,
+    SEARCH_WAIT = 2.0,
 
     WEBHOOK_URL = "",
     PING = "",
@@ -68,12 +67,14 @@ loadCfg()
 
 local REF = {
     market = nil,
+    browse = nil,
     browseList = nil,
     searchBox = nil,
     typeBtn = nil,
     preview = nil,
     previewLbl = nil,
     previewList = nil,
+    browseTabBtn = nil,
 }
 
 local function refreshRefs()
@@ -85,10 +86,13 @@ local function refreshRefs()
     local mn = m:FindFirstChild("Main")
     local ts = mn and mn:FindFirstChild("Tabs")
     local br = ts and ts:FindFirstChild("Browse")
+    REF.browse = br
     REF.browseList = br and br:FindFirstChild("List")
     local fl = br and br:FindFirstChild("Filters")
     REF.searchBox = fl and fl:FindFirstChild("Search")
     REF.typeBtn = fl and fl:FindFirstChild("Type")
+    local cards = mn and mn:FindFirstChild("Cards")
+    REF.browseTabBtn = cards and cards:FindFirstChild("Browse")
     local df = m:FindFirstChild("Defer")
     local ip = df and df:FindFirstChild("ItemPreview")
     REF.preview = ip
@@ -132,9 +136,9 @@ local function scrollToCard(frame)
     if not list or not list:IsA("ScrollingFrame") then return end
     local ok = pcall(function()
         local relY = frame.AbsolutePosition.Y - list.AbsolutePosition.Y
-        list.CanvasPosition = Vector2.new(0, math.max(0, list.CanvasPosition.Y + relY - 40))
+        list.CanvasPosition = Vector2.new(0, math.max(0, list.CanvasPosition.Y + relY - 60))
     end)
-    if ok then task.wait(0.05) end
+    if ok then task.wait(0.08) end
 end
 
 local function normalize(s)
@@ -171,38 +175,88 @@ end
 
 local function cardName(f)
     local c = f:FindFirstChild("Container")
-    local l = c and c:FindFirstChild("Label")
+    if not c then return nil end
+    local l = c:FindFirstChild("Label")
     return l and l.Text or nil
 end
 
-local function buildCardIndex()
+local function findCardByName(name)
     local list = REF.browseList
-    if not list then return {} end
-    local idx = {}
-    for _, f in ipairs(list:GetChildren()) do
-        if f:IsA("Frame") and f:FindFirstChild("Container") then
-            local n = cardName(f)
-            if n and n ~= "" then
-                idx[normalize(n)] = f
-            end
-        end
-    end
-    return idx
-end
+    if not list then return nil end
+    local target = normalize(name)
+    local exact, prefix, contains = nil, nil, nil
+    local prefixLen, containsLen = math.huge, math.huge
 
-local function listNamesString(limit)
-    local list = REF.browseList
-    if not list then return "" end
-    local t = {}
     for _, f in ipairs(list:GetChildren()) do
         if f:IsA("Frame") then
             local n = cardName(f)
-            if n then t[#t + 1] = n end
+            if n then
+                local nn = normalize(n)
+                if nn == target then
+                    exact = f
+                    break
+                end
+                if string.sub(nn, 1, #target) == target then
+                    if #nn < prefixLen then
+                        prefix = f
+                        prefixLen = #nn
+                    end
+                elseif string.find(nn, target, 1, true) then
+                    if #nn < containsLen then
+                        contains = f
+                        containsLen = #nn
+                    end
+                end
+            end
         end
     end
-    local s = table.concat(t, ", ")
-    if limit and #s > limit then s = string.sub(s, 1, limit) .. "..." end
-    return s
+    return exact or prefix or contains
+end
+
+local function scrollBrowse(delta)
+    local list = REF.browseList
+    if not list or not list:IsA("ScrollingFrame") then return false end
+    local ok = pcall(function()
+        list.CanvasPosition = Vector2.new(
+            list.CanvasPosition.X,
+            math.max(0, list.CanvasPosition.Y + (delta or 500)))
+    end)
+    if ok then task.wait(0.08) end
+    return ok
+end
+
+local function findCardByScrolling(name)
+    local list = REF.browseList
+    if not list or not list:IsA("ScrollingFrame") then return nil end
+    local saved = list.CanvasPosition
+    pcall(function() list.CanvasPosition = Vector2.new(0, 0) end)
+    task.wait(0.15)
+
+    local found = findCardByName(name)
+    if not found then
+        local tries = 0
+        while not found and tries < 30 do
+            scrollBrowse(500)
+            found = findCardByName(name)
+            tries = tries + 1
+        end
+    end
+
+    if not found then
+        pcall(function() list.CanvasPosition = saved end)
+    end
+    return found
+end
+
+local function ensureBrowseTab()
+    local mn = REF.market and REF.market:FindFirstChild("Main")
+    local tabs = mn and mn:FindFirstChild("Tabs")
+    if not tabs then return end
+    local br = tabs:FindFirstChild("Browse")
+    if br and not br.Visible then
+        if REF.browseTabBtn then fireSignals(REF.browseTabBtn) end
+        task.wait(0.3)
+    end
 end
 
 local function setSearch(q)
@@ -210,23 +264,12 @@ local function setSearch(q)
     if not box then return false end
     pcall(function() box:CaptureFocus() end)
     task.wait(0.05)
-    box.Text = ""
-    task.wait(0.05)
     box.Text = q or ""
-    task.wait(0.08)
-    if firesignal then
-        pcall(firesignal, box.TextChanged, q or "")
-    end
     pcall(function() box:ReleaseFocus() end)
     task.wait(0.05)
     if firesignal then
         pcall(firesignal, box.FocusLost, true)
     end
-    pcall(function()
-        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-        task.wait(0.03)
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-    end)
     return true
 end
 
@@ -234,7 +277,7 @@ local function setTypeTo(target)
     local t = REF.typeBtn
     if not t then return false end
     target = string.upper(target)
-    for _ = 1, 5 do
+    for _ = 1, 6 do
         if string.upper(t.Text) == target then return true end
         fireSignals(t)
         task.wait(0.15)
@@ -270,9 +313,11 @@ local function openCard(frame, expectedName)
     local c = frame:FindFirstChild("Container")
     if not c then return nil end
     local prevName = (REF.previewLbl and REF.previewLbl.Text) or ""
+
     if normalize(prevName) == normalize(expectedName) and previewCount() > 0 then
         return readTop()
     end
+
     fireSignals(c)
     local deadline = tick() + CFG.PREVIEW_TIMEOUT
     repeat
@@ -280,7 +325,9 @@ local function openCard(frame, expectedName)
         local lbl = REF.previewLbl
         if lbl and lbl.Text ~= prevName and lbl.Text ~= "" then break end
     until tick() > deadline
+
     local changed = REF.previewLbl and REF.previewLbl.Text ~= prevName and REF.previewLbl.Text ~= ""
+
     if not changed then
         scrollToCard(frame)
         realClick(c)
@@ -291,14 +338,17 @@ local function openCard(frame, expectedName)
             if lbl and lbl.Text ~= prevName and lbl.Text ~= "" then break end
         until tick() > deadline2
     end
+
     local finalLbl = REF.previewLbl
-    if not finalLbl or finalLbl.Text == "" or normalize(finalLbl.Text) ~= normalize(expectedName) then
+    if not finalLbl or finalLbl.Text == "" then
         return nil
     end
+
     local deadline3 = tick() + CFG.CARDS_TIMEOUT
     while previewCount() == 0 and tick() < deadline3 do
         RunService.Heartbeat:Wait()
     end
+
     return readTop()
 end
 
@@ -550,7 +600,7 @@ scanInput.Size = UDim2.new(1, -240, 1, 0)
 scanInput.BackgroundColor3 = BG2
 scanInput.BorderSizePixel = 0
 scanInput.Text = ""
-scanInput.PlaceholderText = "exact item name"
+scanInput.PlaceholderText = "item name"
 scanInput.TextColor3 = TXT
 scanInput.PlaceholderColor3 = SUB
 scanInput.Font = Enum.Font.Gotham
@@ -660,7 +710,7 @@ wlInput.Position = UDim2.new(0, 0, 0, 0)
 wlInput.BackgroundColor3 = BG2
 wlInput.BorderSizePixel = 0
 wlInput.Text = ""
-wlInput.PlaceholderText = "iron, candy bag, adurite"
+wlInput.PlaceholderText = "magnetite, iron, candy bag"
 wlInput.TextColor3 = TXT
 wlInput.PlaceholderColor3 = SUB
 wlInput.Font = Enum.Font.Gotham
@@ -935,7 +985,7 @@ mkToggle(setScroll, "Enable global cooldown", CFG.WEBHOOK_CD_ENABLED,
     function(v) CFG.WEBHOOK_CD_ENABLED = v end)
 local globalCdIn = mkRow(setScroll, "Cooldown, s", "30", tostring(CFG.WEBHOOK_GLOBAL_CD),
     function(v) CFG.WEBHOOK_GLOBAL_CD = tonumber(v) or 0 end)
-mkHint(setScroll, "Minimum seconds between any two webhook messages. Applies only to price change notifications.")
+mkHint(setScroll, "Minimum seconds between any two price change messages.")
 
 mkToggle(setScroll, "Send only when price changes", CFG.WEBHOOK_PRICE_CHANGE_ONLY,
     function(v) CFG.WEBHOOK_PRICE_CHANGE_ONLY = v end)
@@ -946,7 +996,7 @@ mkToggle(setScroll, "Auto rescan every N seconds", CFG.RESCAN_ENABLED,
     function(v) CFG.RESCAN_ENABLED = v end)
 local rescanIn = mkRow(setScroll, "Rescan interval, s", "60", tostring(CFG.RESCAN_INTERVAL),
     function(v) CFG.RESCAN_INTERVAL = tonumber(v) or 60 end)
-mkHint(setScroll, "If enabled, the script re-checks the whitelist every N seconds and pings when a price changed.")
+mkHint(setScroll, "If enabled, script re-checks whitelist every N seconds.")
 
 mkHeader(setScroll, "Filters")
 local topInput = mkRow(setScroll, "Top listings to show", "3", tostring(CFG.TOP_N),
@@ -974,7 +1024,7 @@ local pollIn = mkRow(setScroll, "Poll interval, s", "5", tostring(CFG.DISCORD_PO
     function(v) CFG.DISCORD_POLL = tonumber(v) or 5 end)
 local replyWhIn = mkRow(setScroll, "Reply webhook", "same as above if empty", CFG.DISCORD_REPLY_WEBHOOK,
     function(v) CFG.DISCORD_REPLY_WEBHOOK = v end)
-mkHint(setScroll, "Bot token from Discord Developer Portal. Channel ID: right click channel, Copy ID. Use: prefix + item name, e.g. !scan Magnetite.")
+mkHint(setScroll, "Use: prefix + item name, e.g. !scan Magnetite.")
 
 mkHeader(setScroll, "Other")
 mkToggle(setScroll, "Auto scan list on start", CFG.AUTO_SCAN_WHITELIST,
@@ -1018,10 +1068,8 @@ local function openMarket()
     local m = REF.market
     if not m then return false end
     m.Visible = true
-    local mn = m:FindFirstChild("Main")
-    local cards = mn and mn:FindFirstChild("Cards")
-    local browseBtn = cards and cards:FindFirstChild("Browse")
-    if browseBtn then fireSignals(browseBtn) end
+    task.wait(0.1)
+    ensureBrowseTab()
     task.wait(0.2)
     return true
 end
@@ -1090,46 +1138,47 @@ btnClose.MouseButton1Click:Connect(function() screen:Destroy() end)
 
 local running, stopFlag = false, false
 
-local function waitForItemInList(name, timeout)
-    local target = normalize(name)
-    local deadline = tick() + timeout
-    while tick() < deadline do
-        RunService.Heartbeat:Wait()
-        local idx = buildCardIndex()
-        if idx[target] then return idx[target] end
-    end
-    return nil
-end
-
 local function scanOneByName(name, silent)
     if not refreshRefs() then return nil end
+    ensureBrowseTab()
+
     if not silent then setStatus("searching " .. name) end
-    setSearch(name)
-    local frame = waitForItemInList(name, CFG.SEARCH_WAIT)
+
+    local frame = findCardByName(name)
     if not frame then
-        setSearch("")
-        task.wait(0.4)
-        setSearch(name)
-        frame = waitForItemInList(name, CFG.SEARCH_WAIT)
+        if not silent then setStatus("scroll for " .. name) end
+        frame = findCardByScrolling(name)
     end
+
+    if not frame then
+        if not silent then setStatus("type search " .. name) end
+        setSearch(name)
+        task.wait(CFG.SEARCH_WAIT)
+        frame = findCardByName(name)
+        if not frame then
+            frame = findCardByScrolling(name)
+        end
+    end
+
     if not frame then
         if not silent then
-            local names = listNamesString(100)
-            if #names > 0 then
-                appendResult(name .. " (not in list. Market returned: " .. names .. ")", {})
-            else
-                appendResult(name .. " (list empty after search)", {})
-            end
+            appendResult(name .. " (not found in market)", {})
         end
         return nil
     end
-    local top = openCard(frame, name)
+
+    local actualName = cardName(frame) or name
+
+    if not silent then setStatus("opening " .. actualName) end
+
+    local top = openCard(frame, actualName)
     if top == nil then
-        if not silent then appendResult(name .. " (did not open)", {}) end
+        if not silent then appendResult(actualName .. " (did not open)", {}) end
         return nil
     end
-    if not silent then appendResult(name, top) end
-    sendWebhook(name, top)
+
+    if not silent then appendResult(actualName, top) end
+    sendWebhook(actualName, top)
     return top
 end
 
@@ -1148,10 +1197,8 @@ local function runWhitelist(opts)
         if not opts.silent then
             setStatus(string.format("[%d/%d] %s", i, total, name))
         end
-        setSearch("")
-        task.wait(0.4)
         scanOneByName(name, opts.silent)
-        task.wait(0.4)
+        task.wait(0.2)
     end
     if not opts.silent then setStatus("list scan done") end
 end
@@ -1309,4 +1356,4 @@ if CFG.AUTO_SCAN_WHITELIST and #whitelist > 0 then
     end)
 end
 
-setStatus("loaded. Set type ALL, open market, press Find")
+setStatus("loaded. Open market and press Find")
