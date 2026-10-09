@@ -23,6 +23,10 @@ local autoSkip = true
 local skipCooldown = 1.5
 local lastSkip = 0
 
+local autoReady = true
+local readyCooldown = 1.5
+local lastReady = 0
+
 local function getCharacter()
     local character = player.Character
     if not character then return end
@@ -209,6 +213,31 @@ task.spawn(function()
     end
 end)
 
+task.spawn(function()
+    local playerGui = player:WaitForChild("PlayerGui")
+    local hud = playerGui:WaitForChild("HalloweenWaveHUD", 20)
+    if not hud then return end
+    local results = hud:WaitForChild("Results", 15)
+    if not results then return end
+    local bottom = results:WaitForChild("Bottom", 10)
+    if not bottom then return end
+    local readyBtn = bottom:WaitForChild("Ready", 10)
+    if not readyBtn then return end
+
+    while task.wait(0.3) do
+        if autoReady
+            and readyBtn.Parent
+            and readyBtn.Visible
+            and readyBtn.Active
+            and results.Visible
+            and tick() - lastReady >= readyCooldown then
+
+            lastReady = tick()
+            fireActivated(readyBtn)
+        end
+    end
+end)
+
 local WindUI = loadstring(
     game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua")
 )()
@@ -224,9 +253,7 @@ local Window = WindUI:CreateWindow({
     SideBarWidth = 180,
 })
 
--- ====== Кнопка открытия окна ======
 local TOGGLE_KEY = Enum.KeyCode.RightControl
-
 local windowOpen = true
 
 local function openWindow()
@@ -247,7 +274,6 @@ local function toggleWindow()
     end
 end
 
--- привязка клавиши
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == TOGGLE_KEY then
@@ -255,7 +281,6 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- плавающая кнопка на экране
 local floatGui = Instance.new("ScreenGui")
 floatGui.Name = "CritterControllerToggle"
 floatGui.ResetOnSpawn = false
@@ -288,7 +313,6 @@ floatStroke.Parent = floatBtn
 
 floatBtn.MouseButton1Click:Connect(toggleWindow)
 
--- ====== Вкладка с настройками ======
 local Tab = Window:Tab({ Title = "Critters", Icon = "paw-print" })
 
 Tab:Dropdown({
@@ -340,7 +364,7 @@ Tab:Toggle({
                 stop()
                 WindUI:Notify({
                     Title = "Critter Controller",
-                    Content = "workspace.Critters не найден",
+                    Content = "workspace.Critters not found",
                     Duration = 4,
                 })
                 return
@@ -374,18 +398,25 @@ Tab:Toggle({
     end,
 })
 
+Tab:Toggle({
+    Title = "Auto Ready Up",
+    Default = true,
+    Callback = function(value)
+        autoReady = value
+    end,
+})
+
 Tab:Button({
     Title = "Stop Movement",
     Callback = stop,
 })
 
--- вкладка настроек UI
-local SettingsTab = Window:Tab({ Title = "Настройки", Icon = "settings" })
+local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
-SettingsTab:Section({ Title = "Интерфейс" })
+SettingsTab:Section({ Title = "Interface" })
 
 SettingsTab:Keybind({
-    Title = "Клавиша открытия меню",
+    Title = "Menu Toggle Key",
     Value = "RightControl",
     Callback = function(key)
         local ok = pcall(function()
@@ -394,7 +425,7 @@ SettingsTab:Keybind({
         if not ok then
             WindUI:Notify({
                 Title = "Critter Controller",
-                Content = "Неверная клавиша: " .. tostring(key),
+                Content = "Invalid key: " .. tostring(key),
                 Duration = 3,
             })
         end
@@ -402,7 +433,7 @@ SettingsTab:Keybind({
 })
 
 SettingsTab:Toggle({
-    Title = "Плавающая кнопка",
+    Title = "Floating Button",
     Default = true,
     Callback = function(value)
         floatBtn.Visible = value
@@ -410,7 +441,7 @@ SettingsTab:Toggle({
 })
 
 SettingsTab:Button({
-    Title = "Скрыть/показать меню",
+    Title = "Show / Hide Menu",
     Callback = toggleWindow,
 })
 
@@ -418,6 +449,6 @@ player.CharacterAdded:Connect(stop)
 
 WindUI:Notify({
     Title = "Critter Controller",
-    Content = "RightControl — открыть/закрыть меню",
+    Content = "RightControl — open / close menu",
     Duration = 4,
 })
