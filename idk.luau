@@ -1,7 +1,3 @@
--- Critter Controller — Roblox Studio
--- LocalScript в StarterPlayerScripts
--- Rayfield UI + автодвижение к криттерам.
-
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local PathfindingService = game:GetService("PathfindingService")
@@ -16,34 +12,30 @@ local standDistance = 2
 local generation = 0
 local activeTween
 
--- noclip
 local noclipConn
 local savedCollisions = {}
 
--- антигравитация
 local antiGrav
 local antiGravConn
 
--- ====== утилиты ======
+local autoSkip = true
+local skipCooldown = 1.5
+local lastSkip = 0
 
 local function getCharacter()
     local character = player.Character
     if not character then return end
-
     local humanoid = character:FindFirstChildOfClass("Humanoid")
     local root = character:FindFirstChild("HumanoidRootPart")
-
     if humanoid and root and humanoid.Health > 0 then
         return character, humanoid, root
     end
 end
 
 local function findPart(obj)
-    if obj:IsA("BasePart") then
-        return obj
-    elseif obj:IsA("Model") then
-        return obj.PrimaryPart
-            or obj:FindFirstChildWhichIsA("BasePart", true)
+    if obj:IsA("BasePart") then return obj end
+    if obj:IsA("Model") then
+        return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
     end
 end
 
@@ -51,7 +43,6 @@ local function targetPosition(obj)
     local part = findPart(obj)
     local _, _, root = getCharacter()
     if not part or not root then return end
-
     local offset
     if heightMode == "Above Hitbox" then
         offset = part.Size.Y / 2 + root.Size.Y / 2 + standDistance
@@ -60,19 +51,14 @@ local function targetPosition(obj)
     else
         offset = standDistance
     end
-
     return part.Position + Vector3.new(0, offset, 0)
 end
 
--- ====== noclip ======
-
 local function startNoclip()
     if noclipConn then return end
-
     noclipConn = RunService.Stepped:Connect(function()
         local character = player.Character
         if not character then return end
-
         for _, part in ipairs(character:GetDescendants()) do
             if part:IsA("BasePart") then
                 if savedCollisions[part] == nil then
@@ -89,21 +75,16 @@ local function stopNoclip()
         noclipConn:Disconnect()
         noclipConn = nil
     end
-
     for part, original in pairs(savedCollisions) do
         if part.Parent then
             part.CanCollide = original
         end
     end
-
     table.clear(savedCollisions)
 end
 
--- ====== антигравитация ======
-
 local function startAntiGrav()
     if antiGravConn then return end
-
     antiGravConn = RunService.Heartbeat:Connect(function()
         local _, _, root = getCharacter()
         if not root then
@@ -113,18 +94,12 @@ local function startAntiGrav()
             end
             return
         end
-
         if not antiGrav or antiGrav.Parent ~= root then
             if antiGrav then antiGrav:Destroy() end
             antiGrav = Instance.new("BodyForce")
             antiGrav.Parent = root
         end
-
-        antiGrav.Force = Vector3.new(
-            0,
-            workspace.Gravity * root.AssemblyMass,
-            0
-        )
+        antiGrav.Force = Vector3.new(0, workspace.Gravity * root.AssemblyMass, 0)
     end)
 end
 
@@ -133,24 +108,19 @@ local function stopAntiGrav()
         antiGravConn:Disconnect()
         antiGravConn = nil
     end
-
     if antiGrav then
         antiGrav:Destroy()
         antiGrav = nil
     end
 end
 
--- ====== движение ======
-
 local function stop()
     running = false
     generation += 1
-
     if activeTween then
         activeTween:Cancel()
         activeTween = nil
     end
-
     stopNoclip()
     stopAntiGrav()
 end
@@ -158,43 +128,28 @@ end
 local function moveTo(obj, token)
     local position = targetPosition(obj)
     local character, humanoid, root = getCharacter()
+    if not position or not character then return false end
 
-    if not position or not character then
-        return false
-    end
-
-    -- Walk: обычная физика, без ноклипа и антигравитации
     if movementMode == "Walk" then
         local path = PathfindingService:CreatePath()
-
         local ok = pcall(function()
             path:ComputeAsync(root.Position, position)
         end)
-
         if not ok or path.Status ~= Enum.PathStatus.Success then
             humanoid:MoveTo(position)
             return false
         end
-
         for _, waypoint in ipairs(path:GetWaypoints()) do
-            if not running or generation ~= token then
-                return false
-            end
-
+            if not running or generation ~= token then return false end
             if waypoint.Action == Enum.PathWaypointAction.Jump then
                 humanoid.Jump = true
             end
-
             humanoid:MoveTo(waypoint.Position)
-
-            local reached = humanoid.MoveToFinished:Wait()
-            if not reached then return false end
+            if not humanoid.MoveToFinished:Wait() then return false end
         end
-
         return true
     end
 
-    -- Teleport / Tween: включаем ноклип + антигравитацию
     startNoclip()
     startAntiGrav()
 
@@ -210,142 +165,152 @@ local function moveTo(obj, token)
             TweenInfo.new(math.clamp(distance / 25, 0.2, 5)),
             {CFrame = CFrame.new(position)}
         )
-
         activeTween:Play()
         local result = activeTween.Completed:Wait()
         activeTween = nil
-
-        return result == Enum.PlaybackState.Completed
-            and running and generation == token
+        return result == Enum.PlaybackState.Completed and running and generation == token
     end
 
     return false
 end
 
--- ====== Rayfield ======
+local function fireActivated(btn)
+    local ok = pcall(function() firesignal(btn.Activated) end)
+    if not ok then
+        pcall(function()
+            for _, c in ipairs(getconnections(btn.Activated)) do
+                if c.Enabled and c.Function then
+                    task.spawn(c.Function)
+                end
+            end
+        end)
+    end
+    return ok
+end
 
-local Rayfield = loadstring(
-    game:HttpGet("https://sirius.menu/rayfield")
+task.spawn(function()
+    local mainGui = player.PlayerGui:WaitForChild("MainGui", 15)
+    if not mainGui then return end
+    local panels = mainGui:WaitForChild("Panels", 5)
+    if not panels then return end
+    local bossbar = panels:WaitForChild("Bossbar", 5)
+    if not bossbar then return end
+    local skipBtn = bossbar:WaitForChild("SkipButton", 5)
+    if not skipBtn then return end
+
+    while task.wait(0.3) do
+        if autoSkip and skipBtn.Visible and skipBtn.Active then
+            if tick() - lastSkip > skipCooldown then
+                lastSkip = tick()
+                fireActivated(skipBtn)
+            end
+        end
+    end
+end)
+
+local WindUI = loadstring(
+    game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua")
 )()
 
-local Window = Rayfield:CreateWindow({
-    Name = "Critter Controller",
-    LoadingTitle = "Critter Controller",
-    LoadingSubtitle = "Movement Settings",
-    ConfigurationSaving = {Enabled = false},
-    KeySystem = false
+local Window = WindUI:CreateWindow({
+    Title = "Critter Controller",
+    Icon = "paw-print",
+    Author = "",
+    Folder = "CritterController",
+    Size = UDim2.fromOffset(560, 440),
+    Transparent = true,
+    Theme = "Dark",
+    SideBarWidth = 180,
 })
 
-local Tab = Window:CreateTab("Critters", "paw-print")
+local Tab = Window:Tab({ Title = "Critters", Icon = "paw-print" })
 
-Tab:CreateDropdown({
-    Name = "Movement Mode",
-    Options = {"Teleport", "Tween", "Walk"},
-    CurrentOption = {"Tween"},
-    MultipleOptions = false,
+Tab:Dropdown({
+    Title = "Movement Mode",
+    Values = {"Teleport", "Tween", "Walk"},
+    Value = "Tween",
+    Multi = false,
     Callback = function(option)
-        movementMode = typeof(option) == "table"
-            and option[1] or option
+        movementMode = typeof(option) == "table" and option[1] or option
         stop()
-    end
+    end,
 })
 
-Tab:CreateDropdown({
-    Name = "Height Mode",
-    Options = {"Above Hitbox", "Below Hitbox", "Normal"},
-    CurrentOption = {"Above Hitbox"},
-    MultipleOptions = false,
+Tab:Dropdown({
+    Title = "Height Mode",
+    Values = {"Above Hitbox", "Below Hitbox", "Normal"},
+    Value = "Above Hitbox",
+    Multi = false,
     Callback = function(option)
-        heightMode = typeof(option) == "table"
-            and option[1] or option
-    end
+        heightMode = typeof(option) == "table" and option[1] or option
+    end,
 })
 
-Tab:CreateSlider({
-    Name = "Stand Distance (от хитбокса)",
-    Range = {1, 25},
-    Increment = 1,
-    Suffix = " studs",
-    CurrentValue = 2,
+Tab:Slider({
+    Title = "Stand Distance",
+    Step = 1,
+    Value = { Min = 1, Max = 25, Default = 2 },
     Callback = function(value)
         standDistance = value
-    end
+    end,
 })
 
-Tab:CreateToggle({
-    Name = "Auto Critters",
-    CurrentValue = false,
+Tab:Toggle({
+    Title = "Auto Critters",
+    Default = false,
     Callback = function(value)
         if not value then
             stop()
             return
         end
-
         if running then return end
-
         running = true
         generation += 1
         local token = generation
 
         task.spawn(function()
             local folder = workspace:WaitForChild("Critters", 5)
-
             if not folder then
                 stop()
-                Rayfield:Notify({
-                    Title = "Error",
-                    Content = "workspace.Critters not found",
-                    Duration = 4
+                WindUI:Notify({
+                    Title = "Critter Controller",
+                    Content = "workspace.Critters не найден",
+                    Duration = 4,
                 })
                 return
             end
 
             while running and generation == token do
                 local found = false
-
                 for _, obj in ipairs(folder:GetChildren()) do
-                    if not running or generation ~= token then
-                        break
-                    end
-
-                    if not obj.Parent then
-                        continue
-                    end
-
+                    if not running or generation ~= token then break end
+                    if not obj.Parent then continue end
                     found = true
-
-                    -- Следуем за криттером, пока он существует:
-                    -- телепорт/твин повторяется каждый кадр.
-                    while running
-                        and generation == token
-                        and obj.Parent do
-
+                    while running and generation == token and obj.Parent do
                         moveTo(obj, token)
                         task.wait(0.05)
                     end
-
                     task.wait(0.1)
                 end
-
                 if not found then
                     task.wait(0.5)
                 end
             end
         end)
-    end
+    end,
 })
 
-Tab:CreateButton({
-    Name = "Stop Movement",
-    Callback = stop
+Tab:Toggle({
+    Title = "Auto Skip Countdown",
+    Default = true,
+    Callback = function(value)
+        autoSkip = value
+    end,
 })
 
-player.CharacterAdded:Connect(function()
-    stop()
-end)
-
-Rayfield:Notify({
-    Title = "Critter Controller",
-    Content = "Interface loaded",
-    Duration = 3
+Tab:Button({
+    Title = "Stop Movement",
+    Callback = stop,
 })
+
+player.CharacterAdded:Connect(stop)
