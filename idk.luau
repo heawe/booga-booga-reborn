@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local PathfindingService = game:GetService("PathfindingService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
@@ -223,6 +224,71 @@ local Window = WindUI:CreateWindow({
     SideBarWidth = 180,
 })
 
+-- ====== Кнопка открытия окна ======
+local TOGGLE_KEY = Enum.KeyCode.RightControl
+
+local windowOpen = true
+
+local function openWindow()
+    windowOpen = true
+    pcall(function() Window:Open() end)
+end
+
+local function closeWindow()
+    windowOpen = false
+    pcall(function() Window:Close() end)
+end
+
+local function toggleWindow()
+    if windowOpen then
+        closeWindow()
+    else
+        openWindow()
+    end
+end
+
+-- привязка клавиши
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == TOGGLE_KEY then
+        toggleWindow()
+    end
+end)
+
+-- плавающая кнопка на экране
+local floatGui = Instance.new("ScreenGui")
+floatGui.Name = "CritterControllerToggle"
+floatGui.ResetOnSpawn = false
+floatGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+floatGui.Parent = player:WaitForChild("PlayerGui")
+
+local floatBtn = Instance.new("TextButton")
+floatBtn.Size = UDim2.fromOffset(52, 52)
+floatBtn.Position = UDim2.new(0, 24, 0.5, -26)
+floatBtn.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+floatBtn.TextColor3 = Color3.fromRGB(235, 235, 245)
+floatBtn.Text = "CC"
+floatBtn.Font = Enum.Font.GothamBold
+floatBtn.TextSize = 16
+floatBtn.AutoButtonColor = true
+floatBtn.BorderSizePixel = 0
+floatBtn.Active = true
+floatBtn.Draggable = true
+floatBtn.Parent = floatGui
+
+local floatCorner = Instance.new("UICorner")
+floatCorner.CornerRadius = UDim.new(1, 0)
+floatCorner.Parent = floatBtn
+
+local floatStroke = Instance.new("UIStroke")
+floatStroke.Color = Color3.fromRGB(80, 80, 100)
+floatStroke.Thickness = 1
+floatStroke.Transparency = 0.35
+floatStroke.Parent = floatBtn
+
+floatBtn.MouseButton1Click:Connect(toggleWindow)
+
+-- ====== Вкладка с настройками ======
 local Tab = Window:Tab({ Title = "Critters", Icon = "paw-print" })
 
 Tab:Dropdown({
@@ -313,4 +379,45 @@ Tab:Button({
     Callback = stop,
 })
 
+-- вкладка настроек UI
+local SettingsTab = Window:Tab({ Title = "Настройки", Icon = "settings" })
+
+SettingsTab:Section({ Title = "Интерфейс" })
+
+SettingsTab:Keybind({
+    Title = "Клавиша открытия меню",
+    Value = "RightControl",
+    Callback = function(key)
+        local ok = pcall(function()
+            TOGGLE_KEY = Enum.KeyCode[key]
+        end)
+        if not ok then
+            WindUI:Notify({
+                Title = "Critter Controller",
+                Content = "Неверная клавиша: " .. tostring(key),
+                Duration = 3,
+            })
+        end
+    end,
+})
+
+SettingsTab:Toggle({
+    Title = "Плавающая кнопка",
+    Default = true,
+    Callback = function(value)
+        floatBtn.Visible = value
+    end,
+})
+
+SettingsTab:Button({
+    Title = "Скрыть/показать меню",
+    Callback = toggleWindow,
+})
+
 player.CharacterAdded:Connect(stop)
+
+WindUI:Notify({
+    Title = "Critter Controller",
+    Content = "RightControl — открыть/закрыть меню",
+    Duration = 4,
+})
