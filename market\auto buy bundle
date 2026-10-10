@@ -1,0 +1,408 @@
+-- =========================================
+-- LOAD RAYFIELD
+-- =========================================
+
+local okRay, Rayfield = pcall(function()
+    return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+end)
+
+if not okRay or type(Rayfield) ~= "table" then
+    return
+end
+
+-- =========================================
+-- SERVICES / PLAYER
+-- =========================================
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+local pg = Player:WaitForChild("PlayerGui")
+
+-- =========================================
+-- STATE
+-- =========================================
+
+local running = false
+local bought = 0
+local target = 50
+local hotkeysEnabled = true
+local activeYesButton = nil
+local guiVisible = true
+
+-- =========================================
+-- HELPERS
+-- =========================================
+
+local function notify(title, content, duration)
+    pcall(function()
+        Rayfield:Notify({
+            Title = title,
+            Content = content,
+            Duration = duration or 3
+        })
+    end)
+end
+
+local function getMainGui()
+    return pg:FindFirstChild("MainGui")
+end
+
+local function getBundle()
+    local g = getMainGui()
+    if not g then return nil end
+    local left = g:FindFirstChild("LeftPanel")
+    if not left then return nil end
+    local hw = left:FindFirstChild("HalloweenUI")
+    if not hw then return nil end
+    local content = hw:FindFirstChild("Content")
+    if not content then return nil end
+    return content:FindFirstChild("Material Bundle")
+end
+
+local function getPrompts()
+    local g = getMainGui()
+    if not g then return nil end
+    local s = g:FindFirstChild("Subordinates")
+    if not s then return nil end
+    return s:FindFirstChild("Prompts")
+end
+
+local function getMarket()
+    local g = getMainGui()
+    if not g then return nil end
+    local p = g:FindFirstChild("Panels")
+    if not p then return nil end
+    return p:FindFirstChild("GlobalMarket")
+end
+
+local function getHalloweenMarket()
+    local g = getMainGui()
+    if not g then return nil end
+
+    local panels = g:FindFirstChild("Panels")
+    if panels then
+        for _, name in ipairs({
+            "HalloweenMarket", "HalloweenShop",
+            "Halloween", "SpookyMarket"
+        }) do
+            local m = panels:FindFirstChild(name)
+            if m then return m end
+        end
+    end
+
+    local left = g:FindFirstChild("LeftPanel")
+    local hw = left and left:FindFirstChild("HalloweenUI")
+    if hw then
+        local content = hw:FindFirstChild("Content")
+        if content then
+            for _, name in ipairs({ "HalloweenMarket", "HalloweenShop", "Market" }) do
+                local m = content:FindFirstChild(name)
+                if m then return m end
+            end
+        end
+        return hw
+    end
+
+    for _, obj in ipairs(g:GetDescendants()) do
+        if obj:IsA("GuiObject")
+            and (obj.Name == "HalloweenMarket"
+                or obj.Name == "HalloweenShop"
+                or obj.Name == "SpookyMarket") then
+            return obj
+        end
+    end
+
+    return nil
+end
+
+-- =========================================
+-- RAYFIELD WINDOW
+-- =========================================
+
+local Window = Rayfield:CreateWindow({
+    Name = "Utility",
+    LoadingTitle = "Utility",
+    LoadingSubtitle = "Bundle / Market",
+    ConfigurationSaving = {
+        Enabled = false,
+        FolderName = nil,
+        FileName = "UtilityConfig"
+    },
+    KeySystem = false
+})
+
+local TabBuy    = Window:CreateTab("Auto Buy", 4483362458)
+local TabMarket = Window:CreateTab("Markets",  4483362458)
+local TabKeys   = Window:CreateTab("Hotkeys",  4483362458)
+
+-- =========================================
+-- AUTO BUY TAB
+-- =========================================
+
+TabBuy:CreateSlider({
+    Name = "Purchase amount",
+    Range = { 1, 1000 },
+    Increment = 1,
+    Suffix = "",
+    CurrentValue = 50,
+    Flag = "buyCount",
+    Callback = function(value)
+        target = math.clamp(math.floor(tonumber(value) or 50), 1, 1000)
+    end
+})
+
+TabBuy:CreateButton({
+    Name = "Start",
+    Callback = function()
+        if running then return end
+        bought = 0
+        running = true
+        notify("Auto Buy", ("Started: 0 / %d"):format(target), 3)
+    end
+})
+
+TabBuy:CreateButton({
+    Name = "Stop",
+    Callback = function()
+        running = false
+        notify("Auto Buy", ("Stopped: %d / %d"):format(bought, target), 3)
+    end
+})
+
+-- =========================================
+-- MARKETS TAB
+-- =========================================
+
+TabMarket:CreateButton({
+    Name = "Open Global Market",
+    Callback = function()
+        local m = getMarket()
+        if m then m.Visible = true end
+    end
+})
+
+TabMarket:CreateButton({
+    Name = "Close Global Market",
+    Callback = function()
+        local m = getMarket()
+        if m then m.Visible = false end
+    end
+})
+
+TabMarket:CreateButton({
+    Name = "Open Halloween Market",
+    Callback = function()
+        local m = getHalloweenMarket()
+        if m then m.Visible = true end
+    end
+})
+
+TabMarket:CreateButton({
+    Name = "Close Halloween Market",
+    Callback = function()
+        local m = getHalloweenMarket()
+        if m then m.Visible = false end
+    end
+})
+
+-- =========================================
+-- HOTKEYS TAB
+-- =========================================
+
+TabKeys:CreateButton({
+    Name = "Toggle Hotkeys (H)",
+    Callback = function()
+        hotkeysEnabled = not hotkeysEnabled
+        notify("Hotkeys", hotkeysEnabled and "ON" or "OFF", 2)
+    end
+})
+
+-- =========================================
+-- FIND RAYFIELD SCREEN GUI
+-- =========================================
+
+local cachedScreenGui = nil
+
+local function findRayfieldScreenGui()
+    if cachedScreenGui and cachedScreenGui.Parent then
+        return cachedScreenGui
+    end
+
+    local parents = {}
+    local okHui, hui = pcall(function()
+        return gethui and gethui() or nil
+    end)
+    if okHui and hui then table.insert(parents, hui) end
+
+    table.insert(parents, pg)
+
+    local okCg, cg = pcall(function()
+        return game:GetService("CoreGui")
+    end)
+    if okCg and cg then table.insert(parents, cg) end
+
+    for _, parent in ipairs(parents) do
+        for _, obj in ipairs(parent:GetChildren()) do
+            if obj:IsA("ScreenGui") then
+                local n = obj.Name:lower()
+                if n:find("rayfield") or n:find("utility") or n:find("sirius") then
+                    cachedScreenGui = obj
+                    return obj
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+-- =========================================
+-- INPUT
+-- Left Shift = toggle GUI
+-- H = toggle Halloween Market
+-- =========================================
+
+UIS.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if UIS:GetFocusedTextBox() then return end
+
+    if input.KeyCode == Enum.KeyCode.LeftShift then
+        guiVisible = not guiVisible
+
+        local screen = findRayfieldScreenGui()
+        if screen then
+            screen.Enabled = guiVisible
+        else
+            pcall(function()
+                Rayfield:Toggle(guiVisible)
+            end)
+        end
+
+    elseif input.KeyCode == Enum.KeyCode.H and hotkeysEnabled then
+        local m = getHalloweenMarket()
+        if m then
+            m.Visible = not m.Visible
+        end
+    end
+end)
+
+-- =========================================
+-- BUTTON CLICKING
+-- =========================================
+
+local function clickButton(button)
+    if not button or not button.Parent then
+        return false
+    end
+
+    if type(getconnections) == "function" then
+        local ok, result = pcall(function()
+            for _, connection in ipairs(getconnections(button.Activated)) do
+                if connection.Function then
+                    task.spawn(connection.Function)
+                    return true
+                end
+            end
+            return false
+        end)
+        if ok and result then
+            return true
+        end
+    end
+
+    if type(firesignal) == "function" then
+        local ok = pcall(firesignal, button.Activated)
+        if ok then
+            return true
+        end
+    end
+
+    return pcall(function()
+        button:Activate()
+    end)
+end
+
+local function getYesButton(prompts)
+    if activeYesButton and activeYesButton.Parent and activeYesButton.Visible then
+        return activeYesButton
+    end
+    activeYesButton = nil
+
+    if not prompts then return nil end
+
+    for _, obj in ipairs(prompts:GetDescendants()) do
+        if obj:IsA("TextButton") and obj.Name == "YesButton" and obj.Visible then
+            local parent = obj.Parent
+            if parent and parent.Name ~= "Templates" then
+                local gp = parent.Parent
+                if gp and gp.Name ~= "Templates" then
+                    activeYesButton = obj
+                    return obj
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+-- =========================================
+-- AUTO BUY LOOP
+-- =========================================
+
+task.spawn(function()
+    while true do
+        if not running then
+            task.wait(0.1)
+            continue
+        end
+
+        if bought >= target then
+            running = false
+            notify("Auto Buy", ("Finished: %d"):format(bought), 4)
+            task.wait(0.1)
+            continue
+        end
+
+        local bundle    = getBundle()
+        local container = bundle and bundle:FindFirstChild("Container")
+        local buyButton = container and container:FindFirstChild("Buy")
+        local prompts   = getPrompts()
+
+        if not (buyButton and buyButton.Parent and buyButton.Visible and buyButton.Active) then
+            task.wait(0.15)
+            continue
+        end
+
+        clickButton(buyButton)
+
+        local yesButton
+        local tries = 0
+        while running and not yesButton and tries < 30 do
+            yesButton = getYesButton(prompts)
+            if not yesButton then
+                task.wait(0.05)
+                tries += 1
+            end
+        end
+
+        if not running then
+            continue
+        end
+
+        if yesButton then
+            if clickButton(yesButton) then
+                bought += 1
+                activeYesButton = nil
+                task.wait(0.2)
+            else
+                task.wait(0.15)
+            end
+        else
+            activeYesButton = nil
+            task.wait(0.15)
+        end
+    end
+end)
