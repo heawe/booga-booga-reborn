@@ -12,9 +12,9 @@ local heightMode = "Above Hitbox"
 local standDistance = 2
 
 local orbitRadius = 5
-local orbitSpeed = 1.5           -- оборотов в секунду
+local orbitSpeed = 1.5
 local orbitHeightMode = "Above Hitbox"
-local orbitYOffset = 0           -- доп. смещение по Y для орбиты
+local orbitYOffset = 0
 
 local generation = 0
 local activeTween
@@ -155,7 +155,6 @@ local function moveTo(obj, token)
     local character, humanoid, root = getCharacter()
     if not part or not character then return false end
 
-    -- ORBIT MODE
     if movementMode == "Orbit" then
         startNoclip()
         startAntiGrav()
@@ -191,7 +190,6 @@ local function moveTo(obj, token)
         return false
     end
 
-    -- Обычные режимы
     local heightOffset = getHeightOffset(part, root)
     local position = part.Position + Vector3.new(0, heightOffset, 0)
 
@@ -457,7 +455,7 @@ Tab:Dropdown({
     end,
 })
 
-Tab:Section({ Title = "Общая высота (для Teleport/Tween/Walk)" })
+Tab:Section({ Title = "General Height (Teleport / Tween / Walk)" })
 
 Tab:Dropdown({
     Title = "Height Mode",
@@ -478,7 +476,7 @@ Tab:Slider({
     end,
 })
 
-Tab:Section({ Title = "Орбита" })
+Tab:Section({ Title = "Orbit" })
 
 Tab:Slider({
     Title = "Orbit Radius",
@@ -517,7 +515,7 @@ Tab:Slider({
     end,
 })
 
-Tab:Section({ Title = "Авто" })
+Tab:Section({ Title = "Automation" })
 
 Tab:Toggle({
     Title = "Auto Critters",
@@ -649,6 +647,6 @@ SettingsTab:Button({
 
 WindUI:Notify({
     Title = "Critter Controller",
-    Content = "RightControl — open / close menu",
+    Content = "RightControl - open / close menu",
     Duration = 4,
 })
