@@ -1,6 +1,13 @@
 --==============================================================
---  Critter Aim + Hitbox  (low-lag)
+--  Critter Aim + Hitbox  v2.1  (fixed hooks, no recursion)
 --==============================================================
+
+-- ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА
+if _G.__CritterAimLoaded then
+    warn("[Critter Aim] уже загружено. Перезайди в игру чтобы перезапустить.")
+    return
+end
+_G.__CritterAimLoaded = true
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -40,18 +47,17 @@ local S = {
 --  Состояние
 --==============================================================
 local critters     = {}
-local partCache    = {}      -- critter -> { part=..., hum=..., lastCheck=... }
+local partCache    = {}
 local lastRefresh  = 0
 local lastHitbox   = 0
 local curTarget    = nil
 local curTargetM   = nil
 local touchPos     = nil
-
 local curVel       = Vector3.new(0, 0, 0)
 local curPrevPos   = nil
 
 --==============================================================
---  Криттеры — кэш частей
+--  Криттеры
 --==============================================================
 local function refreshCritters()
     local f = workspace:FindFirstChild("Critters")
@@ -62,7 +68,6 @@ local function refreshCritters()
     end
     critters = list
 
-    -- чистка кэша мёртвых
     local alive = {}
     for i = 1, #critters do alive[critters[i]] = true end
     for k in pairs(partCache) do
@@ -70,7 +75,6 @@ local function refreshCritters()
     end
 end
 
--- Возвращает part (не рекурсивно, только прямые дети)
 local function getPart(c)
     if not c or not c.Parent then return nil end
     local cache = partCache[c]
@@ -90,23 +94,19 @@ local function getPart(c)
         p = c:FindFirstChild("Torso")
     end
     if not (p and p:IsA("BasePart")) then
-        p = c:FindFirstChildWhichIsA("BasePart")   -- ← БЕЗ рекурсии
+        p = c:FindFirstChildWhichIsA("BasePart")
     end
 
-    partCache[c] = { part = p, lastCheck = tick() }
+    if not partCache[c] then partCache[c] = {} end
+    partCache[c].part = p
+    partCache[c].lastCheck = tick()
     return p
 end
 
 local function isAlive(c)
     if not c or not c.Parent then return false end
-    local cache = partCache[c]
-    local h = cache and cache.hum
-    if h and h.Parent then return h.Health > 0 end
-    h = c:FindFirstChildOfClass("Humanoid")
-    if h then
-        if cache then cache.hum = h else partCache[c] = { hum = h, lastCheck = tick() } end
-        return h.Health > 0
-    end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if h then return h.Health > 0 end
     return true
 end
 
@@ -276,7 +276,7 @@ local function computeDir(origin, tPart, tModel, proj)
 end
 
 --==============================================================
---  Выбор цели (одна итерация, дешёвая)
+--  Цель
 --==============================================================
 local function aimActive()
     return S.SilentAim or S.AutoShoot
@@ -329,7 +329,7 @@ local function findTarget(cam)
 end
 
 --==============================================================
---  Применение aim
+--  applyAim
 --==============================================================
 local function applyAim(self)
     if not aimActive() then return end
@@ -352,47 +352,82 @@ local function applyAim(self)
 end
 
 --==============================================================
---  Хуки
+--  ХУК PROJECTILE.NEW  —  ИСПРАВЛЕНО
 --==============================================================
-if ProjClass then
+local hookDepth = 0
+local MAX_DEPTH = 3
+
+if ProjClass and type(ProjClass.new) == "function" then
     pcall(function()
-        local orig = ProjClass.new
-        local function hooked(self, ...)
+        local orig
+
+        local function hookedNew(self, ...)
+            -- защита от бесконечной рекурсии
+            if hookDepth >= MAX_DEPTH then
+                return orig(self, ...)
+            end
+            hookDepth = hookDepth + 1
+
+            -- наш aim в pcall, чтобы НИКОГДА не сломать оригинал
             pcall(applyAim, self)
-            return orig(self, ...)
+
+            local a, b, c, d, e, f, g, h
+            local ok, r1, r2, r3, r4, r5, r6, r7, r8 =
+                pcall(orig, self, ...)
+            hookDepth = hookDepth - 1
+
+            if ok then return r1, r2, r3, r4, r5, r6, r7, r8 end
+            return nil
         end
+
         if type(hookfunction) == "function" then
-            hookfunction(ProjClass.new, hooked)
+            -- ВАЖНО: hookfunction ВОЗВРАЩАЕТ безопасный вызов оригинала
+            orig = hookfunction(ProjClass.new, hookedNew)
         else
-            ProjClass.new = hooked
+            orig = ProjClass.new
+            ProjClass.new = hookedNew
         end
     end)
 end
 
+--==============================================================
+--  ХУК FireServer  —  тоже с защитой
+--==============================================================
 if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
     pcall(function()
         local origNc
+        local ncDepth = 0
+        local NC_MAX = 3
+
         origNc = hookmetamethod(game, "__namecall", function(self, ...)
-            local method = getnamecallmethod()
-            if method == "FireServer"
-                and typeof(self) == "Instance"
-                and self.Name == "CreateProjectile"
-                and aimActive()
-            then
-                local shot = select(1, ...)
-                if shot then pcall(applyAim, shot) end
+            if ncDepth >= NC_MAX then
+                return origNc(self, ...)
             end
-            return origNc(self, ...)
+            ncDepth = ncDepth + 1
+            local ok, a, b, c, d, e, f, g, h = pcall(function()
+                if getnamecallmethod() == "FireServer"
+                    and typeof(self) == "Instance"
+                    and self.Name == "CreateProjectile"
+                    and aimActive()
+                then
+                    local shot = select(1, ...)
+                    if shot then pcall(applyAim, shot) end
+                end
+                return origNc(self, ...)
+            end)
+            ncDepth = ncDepth - 1
+            if ok then return a, b, c, d, e, f, g, h end
+            return nil
         end)
     end)
 end
 
 --==============================================================
---  ЕДИНЫЙ ГЛАВНЫЙ ЦИКЛ — 20 Hz, всё внутри
+--  Главный цикл — 20 Hz
 --==============================================================
 task.spawn(function()
     while true do
-        task.wait(0.05)  -- 20 Hz, не 60
+        task.wait(0.05)
         local now = tick()
 
         local aim = aimActive()
@@ -400,18 +435,15 @@ task.spawn(function()
         local visOn = S.HitboxVisuals
 
         if not aim and not hbOn then
-            -- всё выключено — вообще ничего не делаем
             curTarget, curTargetM = nil, nil
             continue
         end
 
-        -- список криттеров — раз в 0.5с
         if now - lastRefresh > 0.5 then
             lastRefresh = now
             refreshCritters()
         end
 
-        -- трекинг скорости ТОЛЬКО текущей цели
         if curTargetM and curTarget and curTarget.Parent then
             local pos = curTarget.Position
             if curPrevPos then
@@ -424,7 +456,6 @@ task.spawn(function()
             curVel = Vector3.new(0, 0, 0)
         end
 
-        -- выбор цели
         if aim then
             local ok, m, p = pcall(findTarget, workspace.CurrentCamera)
             if ok then
@@ -433,7 +464,6 @@ task.spawn(function()
             end
         end
 
-        -- хитбокс — 6-7 Hz (раз в 0.15с)
         if hbOn and now - lastHitbox > 0.15 then
             lastHitbox = now
             local en = S.HitboxEnabled
@@ -477,11 +507,6 @@ task.spawn(function()
                                     box.Parent = p
                                 end
                                 box.Visible = true
-                            end
-                        else
-                            local box = p:FindFirstChild("CritterVisual")
-                            if box then
-                                pcall(function() box:Destroy() end)
                             end
                         end
                     end
@@ -527,7 +552,7 @@ if VirtualInputManager then
 end
 
 --==============================================================
---  FOV-кольцо (единственный RenderStepped, дешевле некуда)
+--  FOV-кольцо
 --==============================================================
 do
     local sg = Instance.new("ScreenGui")
@@ -567,7 +592,6 @@ do
         end
     end)
 
-    -- RenderStepped, но внутри — 2 присвоения, никаких циклов
     RunService.RenderStepped:Connect(function()
         local show = S.ShowFOV and aimActive()
         if ring.Visible ~= show then ring.Visible = show end
@@ -611,7 +635,7 @@ do
     title.Size = UDim2.new(1, 0, 0, 34)
     title.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
     title.BorderSizePixel = 0
-    title.Text = "  Critter Aim"
+    title.Text = "  Critter Aim v2.1"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 15
@@ -801,4 +825,4 @@ do
     toggle("Debug Prints", S.Debug, function(v) S.Debug = v end)
 end
 
-print("[Critter Aim] loaded")
+print("[Critter Aim v2.1] loaded — хуки исправлены")
