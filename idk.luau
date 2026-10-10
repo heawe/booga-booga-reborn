@@ -19,6 +19,10 @@ local savedCollisions = {}
 local antiGrav
 local antiGravConn
 
+local autoSkip = true
+local skipCooldown = 1.5
+local lastSkip = 0
+
 local autoReady = true
 local readyCooldown = 1.5
 local lastReady = 0
@@ -234,10 +238,6 @@ end
 
 player.CharacterAdded:Connect(onSpawn)
 
--- Auto Skip Countdown (original logic)
-local skipCooldown = 1.5
-local lastSkip = 0
-
 task.spawn(function()
     local mainGui = player.PlayerGui:WaitForChild("MainGui", 15)
     if not mainGui then return end
@@ -249,7 +249,7 @@ task.spawn(function()
     if not skipBtn then return end
 
     while task.wait(0.3) do
-        if skipBtn.Visible and skipBtn.Active then
+        if autoSkip and skipBtn.Visible and skipBtn.Active then
             if tick() - lastSkip > skipCooldown then
                 lastSkip = tick()
                 fireActivated(skipBtn)
@@ -258,7 +258,6 @@ task.spawn(function()
     end
 end)
 
--- Auto Ready Up
 task.spawn(function()
     local playerGui = player:WaitForChild("PlayerGui")
     local hud = playerGui:WaitForChild("HalloweenWaveHUD", 20)
@@ -462,6 +461,14 @@ Tab:Toggle({
                 end
             end
         end)
+    end,
+})
+
+Tab:Toggle({
+    Title = "Auto Skip Countdown",
+    Default = true,
+    Callback = function(value)
+        autoSkip = value
     end,
 })
 
