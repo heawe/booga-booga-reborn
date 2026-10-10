@@ -1,11 +1,11 @@
 --==============================================================
---  Critter Aim + Hitbox  (полный рерайт)
+--  Critter Aim + Hitbox  (low-lag)
 --==============================================================
 
-local Players             = game:GetService("Players")
-local RunService          = game:GetService("RunService")
-local UserInputService    = game:GetService("UserInputService")
-local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local plr = Players.LocalPlayer
 
@@ -16,40 +16,42 @@ pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") en
 --  Настройки
 --==============================================================
 local S = {
-    SilentAim         = false,
-    AutoShoot         = false,
-    AllCritters       = true,
-    SelectedCritters  = {},
+    SilentAim        = false,
+    AutoShoot        = false,
+    AllCritters      = true,
+    SelectedCritters = {},
 
-    LeadMult          = 1.0,
-    TargetPart        = "HumanoidRootPart",
+    LeadMult         = 1.0,
+    TargetPart       = "HumanoidRootPart",
 
-    HitboxEnabled     = false,
-    HitboxVisuals     = false,
-    HitboxBowOnly     = false,
-    HitboxSize        = 7,
+    HitboxEnabled    = false,
+    HitboxVisuals    = false,
+    HitboxBowOnly    = false,
+    HitboxSize       = 7,
 
-    ShowFOV           = false,
-    FOVRadius         = 120,
-    MoveFOV           = false,
+    ShowFOV          = false,
+    FOVRadius        = 120,
+    MoveFOV          = false,
 
-    Debug             = false,
+    Debug            = false,
 }
 
 --==============================================================
 --  Состояние
 --==============================================================
 local critters     = {}
+local partCache    = {}      -- critter -> { part=..., hum=..., lastCheck=... }
 local lastRefresh  = 0
-local hitboxTick   = 0
-local aimTick      = 0
+local lastHitbox   = 0
 local curTarget    = nil
 local curTargetM   = nil
 local touchPos     = nil
-local velHistory   = {}
+
+local curVel       = Vector3.new(0, 0, 0)
+local curPrevPos   = nil
 
 --==============================================================
---  Криттеры
+--  Криттеры — кэш частей
 --==============================================================
 local function refreshCritters()
     local f = workspace:FindFirstChild("Critters")
@@ -59,34 +61,53 @@ local function refreshCritters()
         if ok and kids then list = kids end
     end
     critters = list
-    -- чистка истории
-    local set = {}
-    for i = 1, #critters do set[critters[i]] = true end
-    for m in pairs(velHistory) do
-        if not set[m] then velHistory[m] = nil end
+
+    -- чистка кэша мёртвых
+    local alive = {}
+    for i = 1, #critters do alive[critters[i]] = true end
+    for k in pairs(partCache) do
+        if not alive[k] then partCache[k] = nil end
     end
+end
+
+-- Возвращает part (не рекурсивно, только прямые дети)
+local function getPart(c)
+    if not c or not c.Parent then return nil end
+    local cache = partCache[c]
+    if cache and cache.lastCheck and tick() - cache.lastCheck < 1 then
+        local p = cache.part
+        if p and p.Parent then return p end
+    end
+
+    local p = c:FindFirstChild(S.TargetPart)
+    if not (p and p:IsA("BasePart")) then
+        p = c:FindFirstChild("HumanoidRootPart")
+    end
+    if not (p and p:IsA("BasePart")) then
+        p = c:FindFirstChild("Head")
+    end
+    if not (p and p:IsA("BasePart")) then
+        p = c:FindFirstChild("Torso")
+    end
+    if not (p and p:IsA("BasePart")) then
+        p = c:FindFirstChildWhichIsA("BasePart")   -- ← БЕЗ рекурсии
+    end
+
+    partCache[c] = { part = p, lastCheck = tick() }
+    return p
 end
 
 local function isAlive(c)
     if not c or not c.Parent then return false end
-    local h = c:FindFirstChildOfClass("Humanoid")
-    if h then return h.Health > 0 end
+    local cache = partCache[c]
+    local h = cache and cache.hum
+    if h and h.Parent then return h.Health > 0 end
+    h = c:FindFirstChildOfClass("Humanoid")
+    if h then
+        if cache then cache.hum = h else partCache[c] = { hum = h, lastCheck = tick() } end
+        return h.Health > 0
+    end
     return true
-end
-
-local function partOf(c)
-    if not c then return nil end
-    local p = c:FindFirstChild(S.TargetPart)
-    if p and p:IsA("BasePart") then return p end
-    p = c:FindFirstChild("HumanoidRootPart")
-    if p and p:IsA("BasePart") then return p end
-    p = c:FindFirstChild("Head")
-    if p and p:IsA("BasePart") then return p end
-    p = c:FindFirstChild("Torso")
-    if p and p:IsA("BasePart") then return p end
-    local ok, d = pcall(function() return c:FindFirstChildWhichIsA("BasePart", true) end)
-    if ok then return d end
-    return nil
 end
 
 local function wantCritter(name)
@@ -96,7 +117,7 @@ local function wantCritter(name)
 end
 
 --==============================================================
---  Лук в руках
+--  Лук
 --==============================================================
 local BOW_WORDS = { "bow", "sling", "crossbow", "cannon", "ballista" }
 
@@ -113,7 +134,7 @@ local function holdingBow()
 end
 
 --==============================================================
---  Модули игры
+--  Модули
 --==============================================================
 local ProjClass, ItemData, ItemIDs
 pcall(function() ProjClass = require(ReplicatedStorage.Game.classes.projectile) end)
@@ -156,34 +177,24 @@ local function getItemRow(toolID, projName)
     return nil
 end
 
--- Возвращает: dir, flightTime, ok, highArc
 local function solveArc(origin, vm, target, gravity)
     local diff = target - origin
     local dist = diff.Magnitude
-    if dist < 1e-4 then
-        return Vector3.new(0, 0, -1), 0, false, false
-    end
+    if dist < 1e-4 then return Vector3.new(0, 0, -1), 0, false, false end
     local direct = diff / dist
 
     local G = -gravity.Y
-    if G <= 0 or vm <= 0 then
-        return direct, dist / math.max(vm, 1), false, false
-    end
+    if G <= 0 or vm <= 0 then return direct, dist / math.max(vm, 1), false, false end
 
-    local hx = diff.X
-    local hz = diff.Z
+    local hx, hz = diff.X, diff.Z
     local Dxz = math.sqrt(hx * hx + hz * hz)
-    if Dxz < 8 then
-        return direct, dist / vm, true, false
-    end
+    if Dxz < 8 then return direct, dist / vm, true, false end
 
     local v2   = vm * vm
     local disc = v2 * v2 - G * (G * Dxz * Dxz + 2 * diff.Y * v2)
-    if disc < 0 then
-        return direct, dist / vm, false, false
-    end
+    if disc < 0 then return direct, dist / vm, false, false end
 
-    local sq        = math.sqrt(disc)
+    local sq = math.sqrt(disc)
     local highAngle = math.atan((v2 + sq) / (G * Dxz))
     local lowAngle  = math.atan((v2 - sq) / (G * Dxz))
 
@@ -200,9 +211,7 @@ local function solveArc(origin, vm, target, gravity)
     if angle > 1.55 then angle = 1.55 end
 
     local flat = Vector3.new(hx, 0, hz)
-    if flat.Magnitude < 1e-6 then
-        return direct, dist / vm, true, highArc
-    end
+    if flat.Magnitude < 1e-6 then return direct, dist / vm, true, highArc end
     flat = flat / flat.Magnitude
 
     local dir = flat * math.cos(angle) + Vector3.new(0, math.sin(angle), 0)
@@ -212,11 +221,8 @@ local function solveArc(origin, vm, target, gravity)
 
     local hSpeed = vm * math.cos(angle)
     local ft
-    if math.abs(hSpeed) < 1e-6 then
-        ft = dist / vm
-    else
-        ft = math.min(Dxz / hSpeed, 10)
-    end
+    if math.abs(hSpeed) < 1e-6 then ft = dist / vm
+    else ft = math.min(Dxz / hSpeed, 10) end
     return dir, ft, true, highArc
 end
 
@@ -229,9 +235,7 @@ local function predict(origin, target, tvel, vm, gravity)
     local pred = target
     for i = 1, iters do
         local _, ft, ok, highArc = solveArc(origin, vm, pred, gravity)
-        if type(ft) ~= "number" or ft ~= ft or not ok then
-            ft = 0.1
-        end
+        if type(ft) ~= "number" or ft ~= ft or not ok then ft = 0.1 end
         local cap = highArc and 1.5 or 4
         if ft > cap then ft = cap end
         pred = target + tvel * S.LeadMult * ft
@@ -259,22 +263,20 @@ local function computeDir(origin, tPart, tModel, proj)
 
     local pos = tPart.Position + Vector3.new(0, 0.2, 0)
 
-    -- скорость цели
     local tvel = Vector3.new(0, 0, 0)
     local rv = tPart.AssemblyLinearVelocity
     if rv and rv.Magnitude > 1 then
         tvel = Vector3.new(rv.X, 0, rv.Z)
-    elseif tModel and velHistory[tModel] then
-        tvel = velHistory[tModel].vel
+    elseif tModel == curTargetM then
+        tvel = curVel
     end
 
     local pred = predict(origin, pos, tvel, vm, grav)
-    local dir = solveArc(origin, vm, pred, grav)
-    return dir
+    return solveArc(origin, vm, pred, grav)
 end
 
 --==============================================================
---  Выбор цели
+--  Выбор цели (одна итерация, дешёвая)
 --==============================================================
 local function aimActive()
     return S.SilentAim or S.AutoShoot
@@ -298,27 +300,25 @@ local function findTarget(cam)
 
     local center = fovCenter(cam)
     local radius = S.FOVRadius
+    local radiusSq = radius * radius
     local camPos = cam.CFrame.Position
-    local wW     = 0.00025
+    local wW = 0.00025
 
     local bestP, bestM, bestScore = nil, nil, math.huge
     for i = 1, #critters do
         local c = critters[i]
-        if isAlive(c) and wantCritter(c.Name) then
-            local p = partOf(c)
+        if wantCritter(c.Name) and isAlive(c) then
+            local p = getPart(c)
             if p then
                 local ok, sp = pcall(function() return cam:WorldToViewportPoint(p.Position) end)
                 if ok and sp.Z > 0.01 then
-                    local dx = sp.X - center.X
-                    local dy = sp.Y - center.Y
-                    local sd = math.sqrt(dx * dx + dy * dy)
-                    if sd <= radius then
+                    local dx, dy = sp.X - center.X, sp.Y - center.Y
+                    local sd = dx * dx + dy * dy
+                    if sd <= radiusSq then
                         local wd = (p.Position - camPos).Magnitude
-                        local score = sd + wd * wW
+                        local score = math.sqrt(sd) + wd * wW
                         if score < bestScore then
-                            bestScore = score
-                            bestP = p
-                            bestM = c
+                            bestScore, bestP, bestM = score, p, c
                         end
                     end
                 end
@@ -346,13 +346,9 @@ local function applyAim(self)
     if not origin then return end
 
     local ok, dir = pcall(computeDir, origin, p, m, self)
-    if not ok or not dir then return end
-    if type(dir) == "Vector3" and dir.Magnitude > 0 then
-        self.originCF = CFrame.lookAt(origin, origin + dir)
-        if S.Debug then
-            print("[CritterAim] shot at", m.Name, "dist", (p.Position - origin).Magnitude)
-        end
-    end
+    if not ok or not dir or type(dir) ~= "Vector3" or dir.Magnitude < 1e-4 then return end
+
+    self.originCF = CFrame.lookAt(origin, origin + dir)
 end
 
 --==============================================================
@@ -392,59 +388,56 @@ if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" 
 end
 
 --==============================================================
---  Главный цикл (один Heartbeat)
+--  ЕДИНЫЙ ГЛАВНЫЙ ЦИКЛ — 20 Hz, всё внутри
 --==============================================================
-RunService.Heartbeat:Connect(function(dt)
-    local now = tick()
+task.spawn(function()
+    while true do
+        task.wait(0.05)  -- 20 Hz, не 60
+        local now = tick()
 
-    -- обновляем список криттеров
-    if now - lastRefresh > 0.3 then
-        lastRefresh = now
-        refreshCritters()
-    end
+        local aim = aimActive()
+        local hbOn = S.HitboxEnabled or S.HitboxVisuals
+        local visOn = S.HitboxVisuals
 
-    -- трекинг скорости
-    if aimActive() then
-        for i = 1, #critters do
-            local c = critters[i]
-            if isAlive(c) then
-                local p = partOf(c)
-                if p then
-                    local e = velHistory[c]
-                    if not e then
-                        velHistory[c] = { prev = p.Position, vel = Vector3.new(0, 0, 0) }
-                    else
-                        local fv = Vector3.new(0, 0, 0)
-                        if dt > 0 then
-                            fv = (p.Position - e.prev) / dt
-                        end
-                        e.vel = Vector3.new(fv.X, 0, fv.Z)
-                        e.prev = p.Position
-                    end
-                end
-            end
+        if not aim and not hbOn then
+            -- всё выключено — вообще ничего не делаем
+            curTarget, curTargetM = nil, nil
+            continue
         end
 
-        -- выбор цели 30 раз/сек
-        if now - aimTick > 0.033 then
-            aimTick = now
+        -- список криттеров — раз в 0.5с
+        if now - lastRefresh > 0.5 then
+            lastRefresh = now
+            refreshCritters()
+        end
+
+        -- трекинг скорости ТОЛЬКО текущей цели
+        if curTargetM and curTarget and curTarget.Parent then
+            local pos = curTarget.Position
+            if curPrevPos then
+                local dv = (pos - curPrevPos) / 0.05
+                curVel = Vector3.new(dv.X, 0, dv.Z)
+            end
+            curPrevPos = pos
+        else
+            curPrevPos = nil
+            curVel = Vector3.new(0, 0, 0)
+        end
+
+        -- выбор цели
+        if aim then
             local ok, m, p = pcall(findTarget, workspace.CurrentCamera)
             if ok then
                 curTargetM, curTarget = m, p
+                curPrevPos = p and p.Position or nil
             end
         end
-    else
-        curTargetM, curTarget = nil, nil
-    end
 
-    -- хитбоксы 8 раз/сек
-    if S.HitboxEnabled or S.HitboxVisuals then
-        hitboxTick = hitboxTick + dt
-        if hitboxTick >= 0.12 then
-            hitboxTick = 0
+        -- хитбокс — 6-7 Hz (раз в 0.15с)
+        if hbOn and now - lastHitbox > 0.15 then
+            lastHitbox = now
             local en = S.HitboxEnabled
             if S.HitboxBowOnly and not holdingBow() then en = false end
-            local vis = S.HitboxVisuals
             local myChar = plr.Character
             local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
             local base = S.HitboxSize
@@ -452,7 +445,7 @@ RunService.Heartbeat:Connect(function(dt)
             for i = 1, #critters do
                 local c = critters[i]
                 if isAlive(c) then
-                    local p = partOf(c)
+                    local p = getPart(c)
                     if p then
                         if en then
                             local size = base
@@ -471,7 +464,7 @@ RunService.Heartbeat:Connect(function(dt)
                                     p.Transparency = 1
                                 end)
                             end
-                            if vis then
+                            if visOn then
                                 local box = p:FindFirstChild("CritterVisual")
                                 if not box then
                                     box = Instance.new("SelectionBox")
@@ -484,6 +477,11 @@ RunService.Heartbeat:Connect(function(dt)
                                     box.Parent = p
                                 end
                                 box.Visible = true
+                            end
+                        else
+                            local box = p:FindFirstChild("CritterVisual")
+                            if box then
+                                pcall(function() box:Destroy() end)
                             end
                         end
                     end
@@ -500,9 +498,9 @@ if VirtualInputManager then
     task.spawn(function()
         while true do
             if not S.AutoShoot then
-                task.wait(0.2)
+                task.wait(0.3)
             else
-                task.wait(0.025)
+                task.wait(0.05)
                 if holdingBow() then
                     local cam = workspace.CurrentCamera
                     if cam then
@@ -529,38 +527,36 @@ if VirtualInputManager then
 end
 
 --==============================================================
---  FOV-кольцо
+--  FOV-кольцо (единственный RenderStepped, дешевле некуда)
 --==============================================================
-local fovCircle
 do
-    local pgui = plr:WaitForChild("PlayerGui")
     local sg = Instance.new("ScreenGui")
     sg.Name = "CritterFOV"
     sg.ResetOnSpawn = false
     sg.IgnoreGuiInset = true
     sg.DisplayOrder = 100
-    sg.Parent = pgui
+    sg.Parent = plr:WaitForChild("PlayerGui")
 
-    fovCircle = Instance.new("Frame")
-    fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-    fovCircle.BackgroundTransparency = 1
-    fovCircle.BorderSizePixel = 0
-    fovCircle.Visible = false
-    fovCircle.Parent = sg
+    local ring = Instance.new("Frame")
+    ring.AnchorPoint = Vector2.new(0.5, 0.5)
+    ring.BackgroundTransparency = 1
+    ring.BorderSizePixel = 0
+    ring.Visible = false
+    ring.Parent = sg
 
     local st = Instance.new("UIStroke")
     st.Thickness = 1.5
     st.Color = Color3.fromRGB(255, 255, 255)
     st.Transparency = 0.3
-    st.Parent = fovCircle
+    st.Parent = ring
 
     local cr = Instance.new("UICorner")
     cr.CornerRadius = UDim.new(1, 0)
-    cr.Parent = fovCircle
+    cr.Parent = ring
 
     local function setR(r)
         local d = math.max(8, r * 2)
-        fovCircle.Size = UDim2.fromOffset(d, d)
+        ring.Size = UDim2.fromOffset(d, d)
     end
     setR(S.FOVRadius)
     _G.__critterSetFOV = setR
@@ -571,14 +567,15 @@ do
         end
     end)
 
+    -- RenderStepped, но внутри — 2 присвоения, никаких циклов
     RunService.RenderStepped:Connect(function()
         local show = S.ShowFOV and aimActive()
-        fovCircle.Visible = show
+        if ring.Visible ~= show then ring.Visible = show end
         if show then
             local cam = workspace.CurrentCamera
             if cam then
                 local c = fovCenter(cam)
-                fovCircle.Position = UDim2.fromOffset(c.X, c.Y)
+                ring.Position = UDim2.fromOffset(c.X, c.Y)
             end
         end
     end)
@@ -588,15 +585,13 @@ end
 --  GUI
 --==============================================================
 do
-    local pgui = plr:WaitForChild("PlayerGui")
-
     local gui = Instance.new("ScreenGui")
     gui.Name = "CritterAim"
     gui.ResetOnSpawn = false
-    gui.Parent = pgui
+    gui.Parent = plr:WaitForChild("PlayerGui")
 
     local main = Instance.new("Frame")
-    main.Size = UDim2.fromOffset(240, 380)
+    main.Size = UDim2.fromOffset(230, 370)
     main.Position = UDim2.new(0, 20, 0, 100)
     main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
     main.BorderSizePixel = 0
@@ -776,7 +771,7 @@ do
     minBtn.MouseButton1Click:Connect(function()
         minimized = not minimized
         scroll.Visible = not minimized
-        main.Size = minimized and UDim2.fromOffset(240, 34) or UDim2.fromOffset(240, 380)
+        main.Size = minimized and UDim2.fromOffset(230, 34) or UDim2.fromOffset(230, 370)
         minBtn.Text = minimized and "+" or "—"
     end)
 
