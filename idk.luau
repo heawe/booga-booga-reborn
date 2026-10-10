@@ -27,6 +27,9 @@ local autoReady = true
 local readyCooldown = 1.5
 local lastReady = 0
 
+local godRockEnabled = false
+local characterToken = 0
+
 local function getCharacter()
     local character = player.Character
     if not character then return end
@@ -193,6 +196,69 @@ local function fireActivated(btn)
     return ok
 end
 
+local function onSpawn(character)
+    characterToken += 1
+    local token = characterToken
+
+    task.spawn(function()
+        local humanoid = character:WaitForChild("Humanoid", 15)
+        if not humanoid then return end
+
+        local playerGui = player:WaitForChild("PlayerGui")
+        local mainGui = playerGui:WaitForChild("MainGui", 15)
+        if not mainGui then return end
+
+        local panels = mainGui:WaitForChild("Panels", 10)
+        if not panels then return end
+
+        local toolbar = panels:WaitForChild("Toolbar", 10)
+        if not toolbar then return end
+
+        local list = toolbar:WaitForChild("List", 10)
+        if not list then return end
+
+        local slot = list:WaitForChild("1", 10)
+        if not slot then return end
+
+        task.wait(3)
+
+        if token ~= characterToken
+            or player.Character ~= character
+            or humanoid.Health <= 0 then
+            return
+        end
+
+        if not godRockEnabled then return end
+
+        keypress(0x31)
+        task.wait(0.1)
+        keyrelease(0x31)
+    end)
+end
+
+player.CharacterAdded:Connect(onSpawn)
+
+local function getMarket()
+    local PlayerGui = player:WaitForChild("PlayerGui")
+    local MainGui = PlayerGui:FindFirstChild("MainGui")
+    local Panels = MainGui and MainGui:FindFirstChild("Panels")
+    return Panels and Panels:FindFirstChild("GlobalMarket")
+end
+
+local function openMarket()
+    local market = getMarket()
+    if market then
+        market.Visible = true
+    end
+end
+
+local function closeMarket()
+    local market = getMarket()
+    if market then
+        market.Visible = false
+    end
+end
+
 task.spawn(function()
     local mainGui = player.PlayerGui:WaitForChild("MainGui", 15)
     if not mainGui then return end
@@ -247,7 +313,7 @@ local Window = WindUI:CreateWindow({
     Icon = "paw-print",
     Author = "",
     Folder = "CritterController",
-    Size = UDim2.fromOffset(560, 440),
+    Size = UDim2.fromOffset(560, 500),
     Transparent = true,
     Theme = "Dark",
     SideBarWidth = 180,
@@ -276,8 +342,16 @@ end
 
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
+
     if input.KeyCode == TOGGLE_KEY then
         toggleWindow()
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.M then
+        openMarket()
+    elseif input.KeyCode == Enum.KeyCode.N then
+        closeMarket()
     end
 end)
 
@@ -407,6 +481,18 @@ Tab:Toggle({
 })
 
 Tab:Button({
+    Title = "God Rock",
+    Callback = function()
+        godRockEnabled = not godRockEnabled
+        WindUI:Notify({
+            Title = "Critter Controller",
+            Content = godRockEnabled and "God Rock enabled" or "God Rock disabled",
+            Duration = 2,
+        })
+    end,
+})
+
+Tab:Button({
     Title = "Stop Movement",
     Callback = stop,
 })
@@ -445,7 +531,21 @@ SettingsTab:Button({
     Callback = toggleWindow,
 })
 
-player.CharacterAdded:Connect(stop)
+SettingsTab:Section({ Title = "Market" })
+
+SettingsTab:Button({
+    Title = "Open Market (M)",
+    Callback = function()
+        openMarket()
+    end,
+})
+
+SettingsTab:Button({
+    Title = "Close Market (N)",
+    Callback = function()
+        closeMarket()
+    end,
+})
 
 WindUI:Notify({
     Title = "Critter Controller",
