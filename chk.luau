@@ -338,6 +338,8 @@ task.spawn(function()
     end
 end)
 
+-- ===== MARKET HELPERS =====
+
 local function getMarket()
     local PlayerGui = player:WaitForChild("PlayerGui")
     local MainGui = PlayerGui:FindFirstChild("MainGui")
@@ -358,6 +360,64 @@ local function closeMarket()
         market.Visible = false
     end
 end
+
+-- Halloween Market finder (ported from Rayfield script)
+local function getHalloweenMarket()
+    local PlayerGui = player:WaitForChild("PlayerGui")
+    local g = PlayerGui:FindFirstChild("MainGui")
+    if not g then return nil end
+
+    local panels = g:FindFirstChild("Panels")
+    if panels then
+        for _, name in ipairs({
+            "HalloweenMarket", "HalloweenShop",
+            "Halloween", "SpookyMarket"
+        }) do
+            local m = panels:FindFirstChild(name)
+            if m then return m end
+        end
+    end
+
+    local left = g:FindFirstChild("LeftPanel")
+    local hw = left and left:FindFirstChild("HalloweenUI")
+    if hw then
+        local content = hw:FindFirstChild("Content")
+        if content then
+            for _, name in ipairs({ "HalloweenMarket", "HalloweenShop", "Market" }) do
+                local m = content:FindFirstChild(name)
+                if m then return m end
+            end
+        end
+        return hw
+    end
+
+    for _, obj in ipairs(g:GetDescendants()) do
+        if obj:IsA("GuiObject")
+            and (obj.Name == "HalloweenMarket"
+                or obj.Name == "HalloweenShop"
+                or obj.Name == "SpookyMarket") then
+            return obj
+        end
+    end
+
+    return nil
+end
+
+local function openHalloweenMarket()
+    local m = getHalloweenMarket()
+    if m then
+        m.Visible = true
+    end
+end
+
+local function closeHalloweenMarket()
+    local m = getHalloweenMarket()
+    if m then
+        m.Visible = false
+    end
+end
+
+-- ===== WINDUI =====
 
 local WindUI = loadstring(
     game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua")
@@ -642,6 +702,20 @@ SettingsTab:Button({
     Title = "Close Market (N)",
     Callback = function()
         closeMarket()
+    end,
+})
+
+SettingsTab:Button({
+    Title = "Open Halloween Market",
+    Callback = function()
+        openHalloweenMarket()
+    end,
+})
+
+SettingsTab:Button({
+    Title = "Close Halloween Market",
+    Callback = function()
+        closeHalloweenMarket()
     end,
 })
 
