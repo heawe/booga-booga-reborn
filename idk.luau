@@ -19,10 +19,6 @@ local savedCollisions = {}
 local antiGrav
 local antiGravConn
 
-local autoSkip = true
-local skipCooldown = 1.5
-local lastSkip = 0
-
 local autoReady = true
 local readyCooldown = 1.5
 local lastReady = 0
@@ -238,26 +234,9 @@ end
 
 player.CharacterAdded:Connect(onSpawn)
 
-local function getMarket()
-    local PlayerGui = player:WaitForChild("PlayerGui")
-    local MainGui = PlayerGui:FindFirstChild("MainGui")
-    local Panels = MainGui and MainGui:FindFirstChild("Panels")
-    return Panels and Panels:FindFirstChild("GlobalMarket")
-end
-
-local function openMarket()
-    local market = getMarket()
-    if market then
-        market.Visible = true
-    end
-end
-
-local function closeMarket()
-    local market = getMarket()
-    if market then
-        market.Visible = false
-    end
-end
+-- Auto Skip Countdown (original logic)
+local skipCooldown = 1.5
+local lastSkip = 0
 
 task.spawn(function()
     local mainGui = player.PlayerGui:WaitForChild("MainGui", 15)
@@ -270,7 +249,7 @@ task.spawn(function()
     if not skipBtn then return end
 
     while task.wait(0.3) do
-        if autoSkip and skipBtn.Visible and skipBtn.Active then
+        if skipBtn.Visible and skipBtn.Active then
             if tick() - lastSkip > skipCooldown then
                 lastSkip = tick()
                 fireActivated(skipBtn)
@@ -279,6 +258,7 @@ task.spawn(function()
     end
 end)
 
+-- Auto Ready Up
 task.spawn(function()
     local playerGui = player:WaitForChild("PlayerGui")
     local hud = playerGui:WaitForChild("HalloweenWaveHUD", 20)
@@ -303,6 +283,27 @@ task.spawn(function()
         end
     end
 end)
+
+local function getMarket()
+    local PlayerGui = player:WaitForChild("PlayerGui")
+    local MainGui = PlayerGui:FindFirstChild("MainGui")
+    local Panels = MainGui and MainGui:FindFirstChild("Panels")
+    return Panels and Panels:FindFirstChild("GlobalMarket")
+end
+
+local function openMarket()
+    local market = getMarket()
+    if market then
+        market.Visible = true
+    end
+end
+
+local function closeMarket()
+    local market = getMarket()
+    if market then
+        market.Visible = false
+    end
+end
 
 local WindUI = loadstring(
     game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua")
@@ -461,14 +462,6 @@ Tab:Toggle({
                 end
             end
         end)
-    end,
-})
-
-Tab:Toggle({
-    Title = "Auto Skip Countdown",
-    Default = true,
-    Callback = function(value)
-        autoSkip = value
     end,
 })
 
