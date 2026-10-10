@@ -354,14 +354,6 @@ local function openMarket()
     end
 end
 
-local function closeMarket()
-    local market = getMarket()
-    if market then
-        market.Visible = false
-    end
-end
-
--- Halloween Market finder (ported from Rayfield script)
 local function getHalloweenMarket()
     local PlayerGui = player:WaitForChild("PlayerGui")
     local g = PlayerGui:FindFirstChild("MainGui")
@@ -407,13 +399,6 @@ local function openHalloweenMarket()
     local m = getHalloweenMarket()
     if m then
         m.Visible = true
-    end
-end
-
-local function closeHalloweenMarket()
-    local m = getHalloweenMarket()
-    if m then
-        m.Visible = false
     end
 end
 
@@ -465,8 +450,6 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 
     if input.KeyCode == Enum.KeyCode.M then
         openMarket()
-    elseif input.KeyCode == Enum.KeyCode.N then
-        closeMarket()
     end
 end)
 
@@ -689,7 +672,7 @@ SettingsTab:Button({
     Callback = toggleWindow,
 })
 
-SettingsTab:Section({ Title = "Market" })
+SettingsTab:Section({ Title = "Markets" })
 
 SettingsTab:Button({
     Title = "Open Market (M)",
@@ -699,23 +682,9 @@ SettingsTab:Button({
 })
 
 SettingsTab:Button({
-    Title = "Close Market (N)",
-    Callback = function()
-        closeMarket()
-    end,
-})
-
-SettingsTab:Button({
     Title = "Open Halloween Market",
     Callback = function()
         openHalloweenMarket()
-    end,
-})
-
-SettingsTab:Button({
-    Title = "Close Halloween Market",
-    Callback = function()
-        closeHalloweenMarket()
     end,
 })
 
