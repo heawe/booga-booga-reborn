@@ -1,13 +1,5 @@
---==============================================================
---  Critter Aim v3  —  без хука projectile.new
---  Перезапусти Roblox полностью перед запуском!
---==============================================================
-
-if _G.__CritterAimV3 then
-    warn("[Critter Aim] уже запущено")
-    return
-end
-_G.__CritterAimV3 = true
+-- Critter Aim v4 — без top-level return
+print("[Critter Aim v4] starting...")
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -19,48 +11,40 @@ local plr = Players.LocalPlayer
 local VirtualInputManager
 pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
 
---==============================================================
 local S = {
-    SilentAim        = false,
-    AutoShoot        = false,
-    AllCritters      = true,
-    SelectedCritters = {},
-
-    LeadMult         = 1.0,
-    TargetPart       = "HumanoidRootPart",
-
-    HitboxEnabled    = false,
-    HitboxVisuals    = false,
-    HitboxBowOnly    = false,
-    HitboxSize       = 7,
-
-    ShowFOV          = false,
-    FOVRadius        = 120,
-    MoveFOV          = false,
-
-    Debug            = false,
+    SilentAim       = false,
+    AutoShoot       = false,
+    AllCritters     = true,
+    LeadMult        = 1.0,
+    TargetPart      = "HumanoidRootPart",
+    HitboxEnabled   = false,
+    HitboxVisuals   = false,
+    HitboxBowOnly   = false,
+    HitboxSize      = 7,
+    ShowFOV         = false,
+    FOVRadius       = 120,
+    MoveFOV         = false,
+    Debug           = false,
 }
 
-local critters     = {}
-local partCache    = {}
-local lastRefresh  = 0
-local lastHitbox   = 0
-local curTarget    = nil
-local curTargetM   = nil
-local touchPos     = nil
-local curVel       = Vector3.new(0, 0, 0)
-local curPrevPos   = nil
+local critters    = {}
+local partCache   = {}
+local lastRefresh = 0
+local lastHitbox  = 0
+local curTarget   = nil
+local curTargetM  = nil
+local touchPos    = nil
+local curVel      = Vector3.new(0, 0, 0)
+local curPrevPos  = nil
 
---==============================================================
 local function refreshCritters()
     local f = workspace:FindFirstChild("Critters")
-    local list = {}
     if f then
         local ok, kids = pcall(function() return f:GetChildren() end)
-        if ok and kids then list = kids end
+        if ok then critters = kids or {} else critters = {} end
+    else
+        critters = {}
     end
-    critters = list
-
     local alive = {}
     for i = 1, #critters do alive[critters[i]] = true end
     for k in pairs(partCache) do
@@ -75,21 +59,11 @@ local function getPart(c)
         local p = cache.part
         if p and p.Parent then return p end
     end
-
     local p = c:FindFirstChild(S.TargetPart)
-    if not (p and p:IsA("BasePart")) then
-        p = c:FindFirstChild("HumanoidRootPart")
-    end
-    if not (p and p:IsA("BasePart")) then
-        p = c:FindFirstChild("Head")
-    end
-    if not (p and p:IsA("BasePart")) then
-        p = c:FindFirstChild("Torso")
-    end
-    if not (p and p:IsA("BasePart")) then
-        p = c:FindFirstChildWhichIsA("BasePart")
-    end
-
+    if not (p and p:IsA("BasePart")) then p = c:FindFirstChild("HumanoidRootPart") end
+    if not (p and p:IsA("BasePart")) then p = c:FindFirstChild("Head") end
+    if not (p and p:IsA("BasePart")) then p = c:FindFirstChild("Torso") end
+    if not (p and p:IsA("BasePart")) then p = c:FindFirstChildWhichIsA("BasePart") end
     if not partCache[c] then partCache[c] = {} end
     partCache[c].part = p
     partCache[c].lastCheck = tick()
@@ -103,13 +77,6 @@ local function isAlive(c)
     return true
 end
 
-local function wantCritter(name)
-    if S.AllCritters then return true end
-    if type(S.SelectedCritters) ~= "table" then return false end
-    return S.SelectedCritters[name] == true
-end
-
---==============================================================
 local BOW_WORDS = { "bow", "sling", "crossbow", "cannon", "ballista" }
 
 local function holdingBow()
@@ -124,12 +91,10 @@ local function holdingBow()
     return false
 end
 
---==============================================================
 local ItemData, ItemIDs
 pcall(function() ItemData = require(ReplicatedStorage.Modules.ItemData) end)
 pcall(function() ItemIDs  = require(ReplicatedStorage.Modules.ItemIDS) end)
 
---==============================================================
 local SPEED_CURVE = {
     {0, 430.16}, {494, 430.16}, {532, 424.46},
     {595, 424.00}, {990, 329.71}, {10000, 329.71},
@@ -170,19 +135,15 @@ local function solveArc(origin, vm, target, gravity)
     local direct = diff / dist
     local G = -gravity.Y
     if G <= 0 or vm <= 0 then return direct, dist / math.max(vm, 1), false, false end
-
     local hx, hz = diff.X, diff.Z
     local Dxz = math.sqrt(hx * hx + hz * hz)
     if Dxz < 8 then return direct, dist / vm, true, false end
-
-    local v2   = vm * vm
+    local v2 = vm * vm
     local disc = v2 * v2 - G * (G * Dxz * Dxz + 2 * diff.Y * v2)
     if disc < 0 then return direct, dist / vm, false, false end
-
     local sq = math.sqrt(disc)
     local highAngle = math.atan((v2 + sq) / (G * Dxz))
     local lowAngle  = math.atan((v2 - sq) / (G * Dxz))
-
     local angle = lowAngle
     local highArc = false
     if diff.Y > 100 then
@@ -192,16 +153,13 @@ local function solveArc(origin, vm, target, gravity)
     end
     if angle < -1.5 then angle = -1.5 end
     if angle > 1.55 then angle = 1.55 end
-
     local flat = Vector3.new(hx, 0, hz)
     if flat.Magnitude < 1e-6 then return direct, dist / vm, true, highArc end
     flat = flat / flat.Magnitude
-
     local dir = flat * math.cos(angle) + Vector3.new(0, math.sin(angle), 0)
     local mag = dir.Magnitude
     if mag < 1e-6 then return direct, dist / vm, true, highArc end
     dir = dir / mag
-
     local hSpeed = vm * math.cos(angle)
     local ft
     if math.abs(hSpeed) < 1e-6 then ft = dist / vm
@@ -214,7 +172,6 @@ local function predict(origin, target, tvel, vm, gravity)
     local d = (target - origin).Magnitude
     if d > 150 then iters = 10
     elseif d > 75 then iters = 8 end
-
     local pred = target
     for i = 1, iters do
         local _, ft, ok, highArc = solveArc(origin, vm, pred, gravity)
@@ -228,13 +185,11 @@ end
 
 local function computeDir(origin, tPart, tModel, proj)
     if not origin or not tPart or not tPart.Parent then return nil end
-
     local item = getItemRow(proj and proj.toolID, proj and proj.projectileName)
     local projItem = nil
     if type(ItemData) == "table" and proj and proj.projectileName then
         projItem = ItemData[proj.projectileName]
     end
-
     local base = speedFromDist((tPart.Position - origin).Magnitude)
     if item and tonumber(item.velocityMagnitude) then
         base = tonumber(item.velocityMagnitude)
@@ -243,9 +198,7 @@ local function computeDir(origin, tPart, tModel, proj)
     local vm     = base + extraV
     local addG   = (projItem and tonumber(projItem.additionalGravity)) or 0
     local grav   = Vector3.new(0, -122.2 + addG, 0)
-
     local pos = tPart.Position + Vector3.new(0, 0.2, 0)
-
     local tvel = Vector3.new(0, 0, 0)
     local rv = tPart.AssemblyLinearVelocity
     if rv and rv.Magnitude > 1 then
@@ -253,12 +206,10 @@ local function computeDir(origin, tPart, tModel, proj)
     elseif tModel == curTargetM then
         tvel = curVel
     end
-
     local pred = predict(origin, pos, tvel, vm, grav)
     return solveArc(origin, vm, pred, grav)
 end
 
---==============================================================
 local function aimActive()
     return S.SilentAim or S.AutoShoot
 end
@@ -278,17 +229,15 @@ end
 local function findTarget(cam)
     if not cam then cam = workspace.CurrentCamera end
     if not cam then return nil, nil end
-
     local center = fovCenter(cam)
     local radius = S.FOVRadius
     local radiusSq = radius * radius
     local camPos = cam.CFrame.Position
     local wW = 0.00025
-
     local bestP, bestM, bestScore = nil, nil, math.huge
     for i = 1, #critters do
         local c = critters[i]
-        if wantCritter(c.Name) and isAlive(c) then
+        if isAlive(c) then
             local p = getPart(c)
             if p then
                 local ok, sp = pcall(function() return cam:WorldToViewportPoint(p.Position) end)
@@ -309,34 +258,22 @@ local function findTarget(cam)
     return bestM, bestP
 end
 
---==============================================================
---  applyAim — единственная точка, где мы правим снаряд
---==============================================================
 local function applyAim(self)
     if not self then return end
     if not aimActive() then return end
     if not holdingBow() then return end
-
     local m, p = curTargetM, curTarget
     if not (m and p and p.Parent) then
         m, p = findTarget(workspace.CurrentCamera)
     end
     if not (m and p) then return end
-
-    -- originCF может быть под другим именем — ищем любое CFrame-поле
     local origin
-    if self.originCF then
-        origin = self.originCF.Position
-    elseif self.origin then
-        origin = self.origin.Position
-    elseif self.position then
-        origin = self.position
-    end
+    if self.originCF then origin = self.originCF.Position
+    elseif self.origin then origin = self.origin.Position
+    elseif self.position then origin = self.position end
     if not origin then return end
-
     local ok, dir = pcall(computeDir, origin, p, m, self)
     if not ok or type(dir) ~= "Vector3" or dir.Magnitude < 1e-4 then return end
-
     if self.originCF then
         self.originCF = CFrame.lookAt(origin, origin + dir)
     elseif self.origin then
@@ -346,21 +283,13 @@ local function applyAim(self)
     end
 end
 
---==============================================================
---  ЕДИНСТВЕННЫЙ хук — namecall на CreateProjectile:FireServer
---  Без хука projectile.new — он и вызывал рекурсию
---==============================================================
+-- namecall hook
 if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
     local ncActive = false
-
-    pcall(function()
+    local ok = pcall(function()
         local origNc
         origNc = hookmetamethod(game, "__namecall", function(self, ...)
-            -- защита от рекурсии: если уже внутри — сразу к оригиналу
-            if ncActive then
-                return origNc(self, ...)
-            end
-
+            if ncActive then return origNc(self, ...) end
             local method = getnamecallmethod()
             if method == "FireServer"
                 and typeof(self) == "Instance"
@@ -368,77 +297,67 @@ if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" 
                 and aimActive()
             then
                 ncActive = true
-                local ok, shot = pcall(function() return select(1, ...) end)
-                if ok and shot then
-                    pcall(applyAim, shot)
-                end
+                local ok2, shot = pcall(function() return select(1, ...) end)
+                if ok2 and shot then pcall(applyAim, shot) end
                 ncActive = false
             end
-
             return origNc(self, ...)
         end)
-        print("[Critter Aim v3] namecall hook установлен")
     end)
+    if ok then
+        print("[Critter Aim v4] namecall hook OK")
+    else
+        warn("[Critter Aim v4] namecall hook FAILED")
+    end
 else
-    warn("[Critter Aim v3] hookmetamethod недоступен — silent aim не будет работать")
+    warn("[Critter Aim v4] hookmetamethod unavailable")
 end
 
---==============================================================
---  Главный цикл
---==============================================================
+-- main loop
 task.spawn(function()
     while true do
         task.wait(0.05)
         local now = tick()
-
         local aim = aimActive()
         local hbOn = S.HitboxEnabled or S.HitboxVisuals
         local visOn = S.HitboxVisuals
-
         if not aim and not hbOn then
             curTarget, curTargetM = nil, nil
-            continue
-        end
-
-        if now - lastRefresh > 0.5 then
-            lastRefresh = now
-            refreshCritters()
-        end
-
-        if curTargetM and curTarget and curTarget.Parent then
-            local pos = curTarget.Position
-            if curPrevPos then
-                local dv = (pos - curPrevPos) / 0.05
-                curVel = Vector3.new(dv.X, 0, dv.Z)
-            end
-            curPrevPos = pos
         else
-            curPrevPos = nil
-            curVel = Vector3.new(0, 0, 0)
-        end
-
-        if aim then
-            local ok, m, p = pcall(findTarget, workspace.CurrentCamera)
-            if ok then
-                curTargetM, curTarget = m, p
-                curPrevPos = p and p.Position or nil
+            if now - lastRefresh > 0.5 then
+                lastRefresh = now
+                refreshCritters()
             end
-        end
-
-        if hbOn and now - lastHitbox > 0.15 then
-            lastHitbox = now
-            local en = S.HitboxEnabled
-            if S.HitboxBowOnly and not holdingBow() then en = false end
-            local myChar = plr.Character
-            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-            local base = S.HitboxSize
-
-            for i = 1, #critters do
-                local c = critters[i]
-                if isAlive(c) then
-                    local p = getPart(c)
-                    if p then
-                        if en then
+            if curTargetM and curTarget and curTarget.Parent then
+                local pos = curTarget.Position
+                if curPrevPos then
+                    local dv = (pos - curPrevPos) / 0.05
+                    curVel = Vector3.new(dv.X, 0, dv.Z)
+                end
+                curPrevPos = pos
+            else
+                curPrevPos = nil
+                curVel = Vector3.new(0, 0, 0)
+            end
+            if aim then
+                local ok, m, p = pcall(findTarget, workspace.CurrentCamera)
+                if ok then
+                    curTargetM, curTarget = m, p
+                    curPrevPos = p and p.Position or nil
+                end
+            end
+            if hbOn and now - lastHitbox > 0.15 then
+                lastHitbox = now
+                local en = S.HitboxEnabled
+                if S.HitboxBowOnly and not holdingBow() then en = false end
+                local myChar = plr.Character
+                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                local base = S.HitboxSize
+                for i = 1, #critters do
+                    local c = critters[i]
+                    if isAlive(c) then
+                        local p = getPart(c)
+                        if p and en then
                             local size = base
                             if myHrp then
                                 local d = (p.Position - myHrp.Position).Magnitude
@@ -477,9 +396,7 @@ task.spawn(function()
     end
 end)
 
---==============================================================
---  Auto Shoot
---==============================================================
+-- Auto shoot
 if VirtualInputManager then
     task.spawn(function()
         while true do
@@ -512,9 +429,7 @@ if VirtualInputManager then
     end)
 end
 
---==============================================================
---  FOV ring
---==============================================================
+-- FOV ring
 do
     local sg = Instance.new("ScreenGui")
     sg.Name = "CritterFOV"
@@ -566,9 +481,7 @@ do
     end)
 end
 
---==============================================================
---  GUI
---==============================================================
+-- GUI
 do
     local gui = Instance.new("ScreenGui")
     gui.Name = "CritterAim"
@@ -596,7 +509,7 @@ do
     title.Size = UDim2.new(1, 0, 0, 34)
     title.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
     title.BorderSizePixel = 0
-    title.Text = "  Critter Aim v3"
+    title.Text = "  Critter Aim v4"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 15
@@ -786,4 +699,4 @@ do
     toggle("Debug Prints", S.Debug, function(v) S.Debug = v end)
 end
 
-print("[Critter Aim v3] loaded — без хука projectile.new")
+print("[Critter Aim v4] loaded OK")
