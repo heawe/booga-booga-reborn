@@ -10,8 +10,12 @@ local running = false
 local movementMode = "Tween"
 local heightMode = "Above Hitbox"
 local standDistance = 2
+
 local orbitRadius = 5
-local orbitSpeed = 1.5 -- оборотов в секунду
+local orbitSpeed = 1.5           -- оборотов в секунду
+local orbitHeightMode = "Above Hitbox"
+local orbitYOffset = 0           -- доп. смещение по Y для орбиты
+
 local generation = 0
 local activeTween
 
@@ -49,14 +53,22 @@ local function findPart(obj)
     end
 end
 
-local function getHeightOffset(part, root)
-    if heightMode == "Above Hitbox" then
+local function calcHeightOffset(mode, part, root)
+    if mode == "Above Hitbox" then
         return part.Size.Y / 2 + root.Size.Y / 2 + standDistance
-    elseif heightMode == "Below Hitbox" then
+    elseif mode == "Below Hitbox" then
         return -(part.Size.Y / 2 + root.Size.Y / 2 + standDistance)
     else
         return standDistance
     end
+end
+
+local function getHeightOffset(part, root)
+    return calcHeightOffset(heightMode, part, root)
+end
+
+local function getOrbitHeightOffset(part, root)
+    return calcHeightOffset(orbitHeightMode, part, root) + orbitYOffset
 end
 
 local function targetPosition(obj)
@@ -143,8 +155,6 @@ local function moveTo(obj, token)
     local character, humanoid, root = getCharacter()
     if not part or not character then return false end
 
-    local heightOffset = getHeightOffset(part, root)
-
     -- ORBIT MODE
     if movementMode == "Orbit" then
         startNoclip()
@@ -166,7 +176,7 @@ local function moveTo(obj, token)
                 angle = angle - math.pi * 2
             end
 
-            local offsetY = getHeightOffset(part2, root)
+            local offsetY = getOrbitHeightOffset(part2, root)
 
             local targetPos = part2.Position + Vector3.new(
                 math.cos(angle) * orbitRadius,
@@ -181,6 +191,8 @@ local function moveTo(obj, token)
         return false
     end
 
+    -- Обычные режимы
+    local heightOffset = getHeightOffset(part, root)
     local position = part.Position + Vector3.new(0, heightOffset, 0)
 
     if movementMode == "Walk" then
@@ -358,7 +370,7 @@ local Window = WindUI:CreateWindow({
     Icon = "paw-print",
     Author = "",
     Folder = "CritterController",
-    Size = UDim2.fromOffset(560, 500),
+    Size = UDim2.fromOffset(560, 520),
     Transparent = true,
     Theme = "Dark",
     SideBarWidth = 180,
@@ -445,6 +457,8 @@ Tab:Dropdown({
     end,
 })
 
+Tab:Section({ Title = "Общая высота (для Teleport/Tween/Walk)" })
+
 Tab:Dropdown({
     Title = "Height Mode",
     Values = {"Above Hitbox", "Below Hitbox", "Normal"},
@@ -464,6 +478,8 @@ Tab:Slider({
     end,
 })
 
+Tab:Section({ Title = "Орбита" })
+
 Tab:Slider({
     Title = "Orbit Radius",
     Step = 1,
@@ -481,6 +497,27 @@ Tab:Slider({
         orbitSpeed = value
     end,
 })
+
+Tab:Dropdown({
+    Title = "Orbit Height Mode",
+    Values = {"Above Hitbox", "Below Hitbox", "Normal"},
+    Value = "Above Hitbox",
+    Multi = false,
+    Callback = function(option)
+        orbitHeightMode = typeof(option) == "table" and option[1] or option
+    end,
+})
+
+Tab:Slider({
+    Title = "Orbit Y Offset",
+    Step = 1,
+    Value = { Min = -50, Max = 50, Default = 0 },
+    Callback = function(value)
+        orbitYOffset = value
+    end,
+})
+
+Tab:Section({ Title = "Авто" })
 
 Tab:Toggle({
     Title = "Auto Critters",
