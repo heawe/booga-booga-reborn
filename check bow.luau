@@ -1,402 +1,487 @@
 --==============================================================
---  Critter Aim + Hitbox  (fast, standalone)
+--  Critter Aim + Hitbox  (полный рерайт)
 --==============================================================
 
 local Players             = game:GetService("Players")
 local RunService          = game:GetService("RunService")
 local UserInputService    = game:GetService("UserInputService")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local CoreGui             = game:GetService("CoreGui")
 
 local plr = Players.LocalPlayer
 
+local VirtualInputManager
+pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
+
 --==============================================================
---  Settings
+--  Настройки
 --==============================================================
-local Settings = {
-    SilentAimOnCritters = false,
-    AutoShoot           = false,
-    AllCritters         = true,
-    SelectedCritters    = {},
+local S = {
+    SilentAim         = false,
+    AutoShoot         = false,
+    AllCritters       = true,
+    SelectedCritters  = {},
 
-    SilentAimLeadMult   = 1.0,
-    SilentAimFlatCap    = 4,
-    SilentAimHighArcCap = 1.5,
-    TargetPart          = "HumanoidRootPart",
+    LeadMult          = 1.0,
+    TargetPart        = "HumanoidRootPart",
 
-    HitboxEnabled       = false,
-    HitboxVisuals       = false,
-    HitboxBowOnly       = false,
-    HitboxSize          = 7,
+    HitboxEnabled     = false,
+    HitboxVisuals     = false,
+    HitboxBowOnly     = false,
+    HitboxSize        = 7,
 
-    ShowFOVCircle       = false,
-    FOVRadius           = 120,
-    MoveFOV             = false,
+    ShowFOV           = false,
+    FOVRadius         = 120,
+    MoveFOV           = false,
 
-    Debug               = false,
+    Debug             = false,
 }
 
 --==============================================================
---  Runtime
+--  Состояние
 --==============================================================
-local velHistory       = {}
-local fovLastTouchPos  = nil
-local cachedCritters   = {}
-local lastCritterRefresh = 0
-local hitboxAccum      = 0
-local visualAccum      = 0
-local currentTarget    = nil
-local currentTargetModel = nil
+local critters     = {}
+local lastRefresh  = 0
+local hitboxTick   = 0
+local aimTick      = 0
+local curTarget    = nil
+local curTargetM   = nil
+local touchPos     = nil
+local velHistory   = {}
 
 --==============================================================
---  Critter helpers
+--  Криттеры
 --==============================================================
 local function refreshCritters()
-    local folder = workspace:FindFirstChild("Critters")
-    cachedCritters = folder and folder:GetChildren() or {}
-    -- отчистка мусора из velHistory
-    local alive = {}
-    for _, c in ipairs(cachedCritters) do alive[c] = true end
+    local f = workspace:FindFirstChild("Critters")
+    local list = {}
+    if f then
+        local ok, kids = pcall(function() return f:GetChildren() end)
+        if ok and kids then list = kids end
+    end
+    critters = list
+    -- чистка истории
+    local set = {}
+    for i = 1, #critters do set[critters[i]] = true end
     for m in pairs(velHistory) do
-        if not alive[m] then velHistory[m] = nil end
+        if not set[m] then velHistory[m] = nil end
     end
 end
 
-local function critterAlive(c)
+local function isAlive(c)
     if not c or not c.Parent then return false end
-    local hum = c:FindFirstChildOfClass("Humanoid")
-    if hum then return hum.Health > 0 end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if h then return h.Health > 0 end
     return true
 end
 
-local function critterName(c) return c and c.Name or "" end
-
-local function critterPart(c)
+local function partOf(c)
     if not c then return nil end
-    local p = c:FindFirstChild(Settings.TargetPart)
+    local p = c:FindFirstChild(S.TargetPart)
     if p and p:IsA("BasePart") then return p end
-    p = c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head") or c:FindFirstChild("Torso")
+    p = c:FindFirstChild("HumanoidRootPart")
     if p and p:IsA("BasePart") then return p end
-    return c:FindFirstChildWhichIsA("BasePart", true)
+    p = c:FindFirstChild("Head")
+    if p and p:IsA("BasePart") then return p end
+    p = c:FindFirstChild("Torso")
+    if p and p:IsA("BasePart") then return p end
+    local ok, d = pcall(function() return c:FindFirstChildWhichIsA("BasePart", true) end)
+    if ok then return d end
+    return nil
 end
 
-local function wantsCritter(name)
-    if Settings.AllCritters then return true end
-    return type(Settings.SelectedCritters) == "table" and Settings.SelectedCritters[name] == true
-end
-
-local function hasCritterSelection()
-    if Settings.AllCritters then return true end
-    for _, v in pairs(Settings.SelectedCritters) do if v then return true end end
-    return false
+local function wantCritter(name)
+    if S.AllCritters then return true end
+    if type(S.SelectedCritters) ~= "table" then return false end
+    return S.SelectedCritters[name] == true
 end
 
 --==============================================================
---  Bow detection
+--  Лук в руках
 --==============================================================
-local BOW_KEYWORDS = { "bow", "sling", "crossbow", "cannon", "ballista" }
+local BOW_WORDS = { "bow", "sling", "crossbow", "cannon", "ballista" }
 
-local function isHoldingBow()
-    local char = plr.Character
-    if not char then return false end
-    local tool = char:FindFirstChildOfClass("Tool")
-    if not tool then return false end
-    local n = tool.Name:lower()
-    for _, k in ipairs(BOW_KEYWORDS) do
-        if n:find(k, 1, true) then return true end
+local function holdingBow()
+    local ch = plr.Character
+    if not ch then return false end
+    local t = ch:FindFirstChildOfClass("Tool")
+    if not t then return false end
+    local n = string.lower(t.Name)
+    for i = 1, #BOW_WORDS do
+        if string.find(n, BOW_WORDS[i], 1, true) then return true end
     end
     return false
 end
 
 --==============================================================
---  Item / projectile modules
+--  Модули игры
 --==============================================================
-local ProjectileClass, ItemData, ItemIDs
-pcall(function()
-    ProjectileClass = require(ReplicatedStorage.Game.classes.projectile)
-    ItemData        = require(ReplicatedStorage.Modules.ItemData)
-    ItemIDs         = require(ReplicatedStorage.Modules.ItemIDS)
-end)
+local ProjClass, ItemData, ItemIDs
+pcall(function() ProjClass = require(ReplicatedStorage.Game.classes.projectile) end)
+pcall(function() ItemData  = require(ReplicatedStorage.Modules.ItemData) end)
+pcall(function() ItemIDs   = require(ReplicatedStorage.Modules.ItemIDS) end)
 
 --==============================================================
---  Trajectory solver
+--  Баллистика
 --==============================================================
 local SPEED_CURVE = {
     {0, 430.16}, {494, 430.16}, {532, 424.46},
     {595, 424.00}, {990, 329.71}, {10000, 329.71},
 }
 
-local function speedFromCurve(dist)
-    local d = math.max(0, dist)
+local function speedFromDist(d)
+    if d < 0 then d = 0 end
     for i = 1, #SPEED_CURVE - 1 do
         local a, b = SPEED_CURVE[i], SPEED_CURVE[i + 1]
         if d >= a[1] and d <= b[1] then
-            local t = (d - a[1]) / math.max(b[1] - a[1], 1e-6)
+            local span = b[1] - a[1]
+            if span < 1e-6 then span = 1e-6 end
+            local t = (d - a[1]) / span
             return a[2] + (b[2] - a[2]) * t
         end
     end
     return SPEED_CURVE[#SPEED_CURVE][2]
 end
 
-local function getItemRow(toolID, projectileName)
+local function getItemRow(toolID, projName)
     if type(ItemData) ~= "table" then return nil end
     local id = tonumber(toolID)
-    if id and ItemData[id] then return ItemData[id] end
-    if type(ItemIDs) == "table" then
-        local name = ItemIDs[id] or ItemIDs[tostring(id)]
-        if name and ItemData[name] then return ItemData[name] end
+    if id then
+        if ItemData[id] then return ItemData[id] end
+        if type(ItemIDs) == "table" then
+            local nm = ItemIDs[id] or ItemIDs[tostring(id)]
+            if nm and ItemData[nm] then return ItemData[nm] end
+        end
     end
-    if projectileName and ItemData[projectileName] then return ItemData[projectileName] end
+    if projName and ItemData[projName] then return ItemData[projName] end
     return nil
 end
 
-local function solveTrajectory(origin, vm, targetPos, gravityVec)
-    local G = -gravityVec.Y
-    local direct = (targetPos - origin).Unit
-    if G <= 0 or vm <= 0 then return direct, 0, 0, false, false end
-    local d   = targetPos - origin
-    local Dxz = Vector2.new(d.X, d.Z).Magnitude
-    if Dxz < 8 then return direct, 0, d.Magnitude / vm, true, false end
+-- Возвращает: dir, flightTime, ok, highArc
+local function solveArc(origin, vm, target, gravity)
+    local diff = target - origin
+    local dist = diff.Magnitude
+    if dist < 1e-4 then
+        return Vector3.new(0, 0, -1), 0, false, false
+    end
+    local direct = diff / dist
+
+    local G = -gravity.Y
+    if G <= 0 or vm <= 0 then
+        return direct, dist / math.max(vm, 1), false, false
+    end
+
+    local hx = diff.X
+    local hz = diff.Z
+    local Dxz = math.sqrt(hx * hx + hz * hz)
+    if Dxz < 8 then
+        return direct, dist / vm, true, false
+    end
+
     local v2   = vm * vm
-    local disc = v2 * v2 - G * (G * Dxz * Dxz + 2 * d.Y * v2)
-    if disc < 0 then return direct, 0, d.Magnitude / vm, false, false end
-    local sq = math.sqrt(disc)
+    local disc = v2 * v2 - G * (G * Dxz * Dxz + 2 * diff.Y * v2)
+    if disc < 0 then
+        return direct, dist / vm, false, false
+    end
+
+    local sq        = math.sqrt(disc)
     local highAngle = math.atan((v2 + sq) / (G * Dxz))
     local lowAngle  = math.atan((v2 - sq) / (G * Dxz))
-    local angle, isHighArc = lowAngle, false
-    if targetPos.Y - origin.Y > 100 then
-        angle, isHighArc = highAngle, true
+
+    local angle = lowAngle
+    local highArc = false
+    if diff.Y > 100 then
+        angle = highAngle
+        highArc = true
     elseif angle ~= angle or math.abs(angle) > math.abs(highAngle) then
-        angle, isHighArc = highAngle, true
+        angle = highAngle
+        highArc = true
     end
-    angle = math.clamp(angle, -1.5, 1.55)
-    local flatDir = Vector3.new(d.X, 0, d.Z)
-    if flatDir.Magnitude < 1e-6 then
-        return direct, angle, d.Magnitude / vm, true, isHighArc
+    if angle < -1.5 then angle = -1.5 end
+    if angle > 1.55 then angle = 1.55 end
+
+    local flat = Vector3.new(hx, 0, hz)
+    if flat.Magnitude < 1e-6 then
+        return direct, dist / vm, true, highArc
     end
-    flatDir = flatDir.Unit
-    local dir = (flatDir * math.cos(angle) + Vector3.new(0, math.sin(angle), 0)).Unit
+    flat = flat / flat.Magnitude
+
+    local dir = flat * math.cos(angle) + Vector3.new(0, math.sin(angle), 0)
+    local mag = dir.Magnitude
+    if mag < 1e-6 then return direct, dist / vm, true, highArc end
+    dir = dir / mag
+
     local hSpeed = vm * math.cos(angle)
-    local flightTime = (math.abs(hSpeed) < 1e-6)
-        and (d.Magnitude / vm)
-        or math.min(Dxz / hSpeed, 10)
-    return dir, angle, flightTime, true, isHighArc
+    local ft
+    if math.abs(hSpeed) < 1e-6 then
+        ft = dist / vm
+    else
+        ft = math.min(Dxz / hSpeed, 10)
+    end
+    return dir, ft, true, highArc
 end
 
--- Честный прогноз: используем AssemblyLinearVelocity как ground truth,
--- а историю — только если она "свежее" и совпадает по направлению.
-local function getTargetVelocity(model, part)
-    if part and part.AssemblyLinearVelocity.Magnitude > 1 then
-        return Vector3.new(part.AssemblyLinearVelocity.X, 0, part.AssemblyLinearVelocity.Z)
+local function predict(origin, target, tvel, vm, gravity)
+    local iters = 6
+    local d = (target - origin).Magnitude
+    if d > 150 then iters = 10
+    elseif d > 75 then iters = 8 end
+
+    local pred = target
+    for i = 1, iters do
+        local _, ft, ok, highArc = solveArc(origin, vm, pred, gravity)
+        if type(ft) ~= "number" or ft ~= ft or not ok then
+            ft = 0.1
+        end
+        local cap = highArc and 1.5 or 4
+        if ft > cap then ft = cap end
+        pred = target + tvel * S.LeadMult * ft
     end
-    local hist = velHistory[model]
-    if hist then
-        return Vector3.new(hist.vel.X, 0, hist.vel.Z)
-    end
-    return Vector3.zero
+    return pred
 end
 
-local function predictAimTime(origin, targetPos, targetVel, vm, gravityVec)
-    local leadMult = Settings.SilentAimLeadMult or 1
-    local flatCap  = Settings.SilentAimFlatCap or 4
-    local highCap  = Settings.SilentAimHighArcCap or 1.5
-    local dist = (targetPos - origin).Magnitude
-    local iterations = dist > 150 and 10 or (dist > 75 and 8 or 5)
+local function computeDir(origin, tPart, tModel, proj)
+    if not origin or not tPart or not tPart.Parent then return nil end
 
-    local predicted = targetPos
-    local dir
-    for _ = 1, iterations do
-        local _, _, flightTime, _, isHighArc = solveTrajectory(origin, vm, predicted, gravityVec)
-        flightTime = math.min(flightTime, isHighArc and highCap or flatCap)
-        predicted = targetPos + targetVel * leadMult * flightTime
+    local item = getItemRow(proj and proj.toolID, proj and proj.projectileName)
+    local projItem = nil
+    if type(ItemData) == "table" and proj and proj.projectileName then
+        projItem = ItemData[proj.projectileName]
     end
-    dir = select(1, solveTrajectory(origin, vm, predicted, gravityVec))
-    return dir, predicted
-end
 
---==============================================================
---  Compute aim
---==============================================================
-local function computeAim(origin, targetPart, targetModel, projectileObject)
-    local toolID         = projectileObject.toolID
-    local projectileName = projectileObject.projectileName
-    local item = getItemRow(toolID, projectileName)
-    local projItem = (type(ItemData) == "table" and projectileName and ItemData[projectileName]) or nil
-
-    local baseSpeed = (item and tonumber(item.velocityMagnitude))
-        or speedFromCurve((targetPart.Position - origin).Magnitude)
-    local addVel  = (projItem and tonumber(projItem.additionalVelocity)) or 0
-    local vm      = baseSpeed + addVel
-    local addGrav = (projItem and tonumber(projItem.additionalGravity)) or 0
-    local gravity = Vector3.new(0, -122.2 + addGrav, 0)
-
-    local targetPos = targetPart.Position + Vector3.new(0, 0.2, 0)
-    local targetVel = getTargetVelocity(targetModel, targetPart)
-    local dir = predictAimTime(origin, targetPos, targetVel, vm, gravity)
-
-    if Settings.Debug then
-        print(string.format(
-            "[CritterAim] vm=%.1f grav=%.1f dist=%.1f tVel=%.1f",
-            vm, gravity.Y, (targetPos - origin).Magnitude, targetVel.Magnitude
-        ))
+    local base = speedFromDist((tPart.Position - origin).Magnitude)
+    if item and tonumber(item.velocityMagnitude) then
+        base = tonumber(item.velocityMagnitude)
     end
+    local extraV = (projItem and tonumber(projItem.additionalVelocity)) or 0
+    local vm     = base + extraV
+    local addG   = (projItem and tonumber(projItem.additionalGravity)) or 0
+    local grav   = Vector3.new(0, -122.2 + addG, 0)
+
+    local pos = tPart.Position + Vector3.new(0, 0.2, 0)
+
+    -- скорость цели
+    local tvel = Vector3.new(0, 0, 0)
+    local rv = tPart.AssemblyLinearVelocity
+    if rv and rv.Magnitude > 1 then
+        tvel = Vector3.new(rv.X, 0, rv.Z)
+    elseif tModel and velHistory[tModel] then
+        tvel = velHistory[tModel].vel
+    end
+
+    local pred = predict(origin, pos, tvel, vm, grav)
+    local dir = solveArc(origin, vm, pred, grav)
     return dir
 end
 
 --==============================================================
---  Target selection
+--  Выбор цели
 --==============================================================
-local function isSilentAimActive()
-    return Settings.SilentAimOnCritters or Settings.AutoShoot
+local function aimActive()
+    return S.SilentAim or S.AutoShoot
 end
 
-local function getFovScreenCenter(c)
-    if Settings.MoveFOV then
-        if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled and fovLastTouchPos then
-            return fovLastTouchPos
+local function fovCenter(cam)
+    if S.MoveFOV then
+        if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled and touchPos then
+            return touchPos
         end
-        local m = UserInputService:GetMouseLocation()
-        if m and (m.X > 1 or m.Y > 1) then return m end
+        local ok, m = pcall(function() return UserInputService:GetMouseLocation() end)
+        if ok and m and (m.X > 1 or m.Y > 1) then return m end
     end
-    local vs = c.ViewportSize
+    local vs = cam.ViewportSize
     return Vector2.new(vs.X * 0.5, vs.Y * 0.5)
 end
 
-local function getBestCritter(c)
-    if not c then c = workspace.CurrentCamera end
-    if not c or not hasCritterSelection() then return nil, nil end
+local function findTarget(cam)
+    if not cam then cam = workspace.CurrentCamera end
+    if not cam then return nil, nil end
 
-    local fovCenter = getFovScreenCenter(c)
-    local fovRadius = Settings.FOVRadius or 120
-    local camPos    = c.CFrame.Position
-    local worldW    = 0.00025
+    local center = fovCenter(cam)
+    local radius = S.FOVRadius
+    local camPos = cam.CFrame.Position
+    local wW     = 0.00025
 
-    local bestPart, bestModel, bestScore = nil, nil, math.huge
-    for _, critter in ipairs(cachedCritters) do
-        if critterAlive(critter) and wantsCritter(critterName(critter)) then
-            local part = critterPart(critter)
-            if part then
-                local sp = c:WorldToViewportPoint(part.Position)
-                if sp.Z > 0.01 then
-                    local sd = (Vector2.new(sp.X, sp.Y) - fovCenter).Magnitude
-                    if sd <= fovRadius then
-                        local wd    = (part.Position - camPos).Magnitude
-                        local score = sd + wd * worldW
+    local bestP, bestM, bestScore = nil, nil, math.huge
+    for i = 1, #critters do
+        local c = critters[i]
+        if isAlive(c) and wantCritter(c.Name) then
+            local p = partOf(c)
+            if p then
+                local ok, sp = pcall(function() return cam:WorldToViewportPoint(p.Position) end)
+                if ok and sp.Z > 0.01 then
+                    local dx = sp.X - center.X
+                    local dy = sp.Y - center.Y
+                    local sd = math.sqrt(dx * dx + dy * dy)
+                    if sd <= radius then
+                        local wd = (p.Position - camPos).Magnitude
+                        local score = sd + wd * wW
                         if score < bestScore then
-                            bestScore, bestPart, bestModel = score, part, critter
+                            bestScore = score
+                            bestP = p
+                            bestM = c
                         end
                     end
                 end
             end
         end
     end
-    return bestModel, bestPart
+    return bestM, bestP
 end
 
 --==============================================================
---  Apply silent aim to projectile object
+--  Применение aim
 --==============================================================
 local function applyAim(self)
-    if not isSilentAimActive() then return end
-    if not isHoldingBow() then return end
-    local model, part = currentTargetModel, currentTarget
-    if not (model and part and part.Parent) then
-        model, part = getBestCritter(workspace.CurrentCamera)
+    if not aimActive() then return end
+    if not holdingBow() then return end
+    if not self then return end
+
+    local m, p = curTargetM, curTarget
+    if not (m and p and p.Parent) then
+        m, p = findTarget(workspace.CurrentCamera)
     end
-    if not (model and part) then return end
+    if not (m and p) then return end
+
     local origin = self.originCF and self.originCF.Position
     if not origin then return end
-    local dir = computeAim(origin, part, model, self)
-    if dir and dir.Magnitude > 0 then
+
+    local ok, dir = pcall(computeDir, origin, p, m, self)
+    if not ok or not dir then return end
+    if type(dir) == "Vector3" and dir.Magnitude > 0 then
         self.originCF = CFrame.lookAt(origin, origin + dir)
+        if S.Debug then
+            print("[CritterAim] shot at", m.Name, "dist", (p.Position - origin).Magnitude)
+        end
     end
 end
 
 --==============================================================
---  MAIN LOOP  (single Heartbeat — всё внутри)
+--  Хуки
 --==============================================================
-local lastAimCalc = 0
+if ProjClass then
+    pcall(function()
+        local orig = ProjClass.new
+        local function hooked(self, ...)
+            pcall(applyAim, self)
+            return orig(self, ...)
+        end
+        if type(hookfunction) == "function" then
+            hookfunction(ProjClass.new, hooked)
+        else
+            ProjClass.new = hooked
+        end
+    end)
+end
 
+if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
+    pcall(function()
+        local origNc
+        origNc = hookmetamethod(game, "__namecall", function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer"
+                and typeof(self) == "Instance"
+                and self.Name == "CreateProjectile"
+                and aimActive()
+            then
+                local shot = select(1, ...)
+                if shot then pcall(applyAim, shot) end
+            end
+            return origNc(self, ...)
+        end)
+    end)
+end
+
+--==============================================================
+--  Главный цикл (один Heartbeat)
+--==============================================================
 RunService.Heartbeat:Connect(function(dt)
     local now = tick()
 
-    -- 1) обновляем список криттеров раз в 0.3с
-    if now - lastCritterRefresh > 0.3 then
-        lastCritterRefresh = now
+    -- обновляем список криттеров
+    if now - lastRefresh > 0.3 then
+        lastRefresh = now
         refreshCritters()
     end
 
-    local aimActive = isSilentAimActive()
-    local hitboxOn  = Settings.HitboxEnabled or Settings.HitboxVisuals
-
-    -- 2) цель считаем только когда нужно: раз в 1/30с
-    if aimActive and now - lastAimCalc > 0.033 then
-        lastAimCalc = now
-        currentTargetModel, currentTarget = getBestCritter(workspace.CurrentCamera)
-    end
-
-    -- 3) трекинг скорости — только для тех, кто активен и в FOV-режиме
-    if aimActive then
-        local c = workspace.CurrentCamera
-        for _, critter in ipairs(cachedCritters) do
-            if critterAlive(critter) then
-                local part = critterPart(critter)
-                if part then
-                    local entry = velHistory[critter]
-                    if not entry then
-                        velHistory[critter] = { prev = part.Position, vel = Vector3.zero }
+    -- трекинг скорости
+    if aimActive() then
+        for i = 1, #critters do
+            local c = critters[i]
+            if isAlive(c) then
+                local p = partOf(c)
+                if p then
+                    local e = velHistory[c]
+                    if not e then
+                        velHistory[c] = { prev = p.Position, vel = Vector3.new(0, 0, 0) }
                     else
-                        local fv = (dt > 0) and ((part.Position - entry.prev) / dt) or Vector3.zero
-                        entry.vel = Vector3.new(fv.X, 0, fv.Z)
-                        entry.prev = part.Position
+                        local fv = Vector3.new(0, 0, 0)
+                        if dt > 0 then
+                            fv = (p.Position - e.prev) / dt
+                        end
+                        e.vel = Vector3.new(fv.X, 0, fv.Z)
+                        e.prev = p.Position
                     end
                 end
             end
         end
+
+        -- выбор цели 30 раз/сек
+        if now - aimTick > 0.033 then
+            aimTick = now
+            local ok, m, p = pcall(findTarget, workspace.CurrentCamera)
+            if ok then
+                curTargetM, curTarget = m, p
+            end
+        end
+    else
+        curTargetM, curTarget = nil, nil
     end
 
-    -- 4) хитбокс — раз в 0.12с
-    if hitboxOn then
-        hitboxAccum = hitboxAccum + dt
-        if hitboxAccum >= 0.12 then
-            hitboxAccum = 0
-            local enabled = Settings.HitboxEnabled
-            local visuals = Settings.HitboxVisuals
-            if Settings.HitboxBowOnly and not isHoldingBow() then enabled = false end
-
+    -- хитбоксы 8 раз/сек
+    if S.HitboxEnabled or S.HitboxVisuals then
+        hitboxTick = hitboxTick + dt
+        if hitboxTick >= 0.12 then
+            hitboxTick = 0
+            local en = S.HitboxEnabled
+            if S.HitboxBowOnly and not holdingBow() then en = false end
+            local vis = S.HitboxVisuals
             local myChar = plr.Character
-            local myHrp  = myChar and myChar:FindFirstChild("HumanoidRootPart")
-            local baseSize = Settings.HitboxSize or 7
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local base = S.HitboxSize
 
-            for _, critter in ipairs(cachedCritters) do
-                if critterAlive(critter) then
-                    local part = critterPart(critter)
-                    if part then
-                        if enabled then
-                            local finalSize = baseSize
+            for i = 1, #critters do
+                local c = critters[i]
+                if isAlive(c) then
+                    local p = partOf(c)
+                    if p then
+                        if en then
+                            local size = base
                             if myHrp then
-                                local dist = (part.Position - myHrp.Position).Magnitude
-                                if dist < 40 then
-                                    finalSize = math.max(3, baseSize * math.clamp(dist / 40, 0.3, 1))
+                                local d = (p.Position - myHrp.Position).Magnitude
+                                if d < 40 then
+                                    local a = d / 40
+                                    if a < 0.3 then a = 0.3 end
+                                    size = math.max(3, base * a)
                                 end
                             end
-                            if math.abs(part.Size.X - finalSize) > 0.2 then
-                                part.Size = Vector3.new(finalSize, finalSize, finalSize)
-                                part.CanCollide = false
-                                part.Transparency = 1
+                            if math.abs(p.Size.X - size) > 0.2 then
+                                pcall(function()
+                                    p.Size = Vector3.new(size, size, size)
+                                    p.CanCollide = false
+                                    p.Transparency = 1
+                                end)
                             end
-                            if visuals then
-                                local box = part:FindFirstChild("CritterHitboxVisual")
+                            if vis then
+                                local box = p:FindFirstChild("CritterVisual")
                                 if not box then
                                     box = Instance.new("SelectionBox")
-                                    box.Name = "CritterHitboxVisual"
-                                    box.Adornee = part
+                                    box.Name = "CritterVisual"
+                                    box.Adornee = p
                                     box.LineThickness = 0
                                     box.Transparency = 1
-                                    box.SurfaceTransparency = 0.75
+                                    box.SurfaceTransparency = 0.7
                                     box.SurfaceColor3 = Color3.fromRGB(255, 50, 50)
-                                    box.Parent = part
+                                    box.Parent = p
                                 end
                                 box.Visible = true
                             end
@@ -405,337 +490,320 @@ RunService.Heartbeat:Connect(function(dt)
                 end
             end
         end
-    else
-        -- выключили — чистим один раз
-        if visualAccum ~= 0 then
-            visualAccum = 0
-        end
     end
 end)
 
 --==============================================================
---  Auto shoot loop
+--  Auto Shoot
 --==============================================================
-task.spawn(function()
-    local FULL_CHARGE = 0.58
-    local POLL        = 0.02
-    local COOLDOWN    = 0.13
-    local lastShot    = 0
-
-    while true do
-        if not Settings.AutoShoot then
-            task.wait(0.25)
-            continue
-        end
-        task.wait(0.025)
-        if not isHoldingBow() then continue end
-        local c = workspace.CurrentCamera
-        if not c then continue end
-        local model, part = getBestCritter(c)
-        if not (model and part) then continue end
-        if tick() - lastShot >= COOLDOWN then
-            local m  = UserInputService:GetMouseLocation()
-            local mx, my = math.floor(m.X), math.floor(m.Y)
-            pcall(function()
-                VirtualInputManager:SendMouseButtonEvent(mx, my, 0, true, game, 1)
-            end)
-            local t0 = tick()
-            while tick() - t0 < FULL_CHARGE do
-                task.wait(POLL)
-                if not Settings.AutoShoot then break end
+if VirtualInputManager then
+    task.spawn(function()
+        while true do
+            if not S.AutoShoot then
+                task.wait(0.2)
+            else
+                task.wait(0.025)
+                if holdingBow() then
+                    local cam = workspace.CurrentCamera
+                    if cam then
+                        local m, p = findTarget(cam)
+                        if m and p then
+                            local ok, loc = pcall(function() return UserInputService:GetMouseLocation() end)
+                            if ok and loc then
+                                local mx, my = math.floor(loc.X), math.floor(loc.Y)
+                                pcall(function()
+                                    VirtualInputManager:SendMouseButtonEvent(mx, my, 0, true, game, 1)
+                                end)
+                                task.wait(0.58)
+                                pcall(function()
+                                    VirtualInputManager:SendMouseButtonEvent(mx, my, 0, false, game, 1)
+                                end)
+                                task.wait(0.15)
+                            end
+                        end
+                    end
+                end
             end
-            pcall(function()
-                VirtualInputManager:SendMouseButtonEvent(mx, my, 0, false, game, 1)
-            end)
-            lastShot = tick()
-            task.wait(COOLDOWN)
         end
-    end
-end)
-
---==============================================================
---  Projectile hooks
---==============================================================
-if ProjectileClass then
-    local oldNew = ProjectileClass.new
-    local function hookedNew(self, ...)
-        pcall(function() applyAim(self) end)
-        return oldNew(self, ...)
-    end
-    if hookfunction and type(hookfunction) == "function" then
-        hookfunction(ProjectileClass.new, hookedNew)
-    else
-        ProjectileClass.new = function(self, ...)
-            return hookedNew(self, ...)
-        end
-    end
-end
-
-if typeof(hookmetamethod) == "function" and typeof(getnamecallmethod) == "function" then
-    pcall(function()
-        local oldNc
-        oldNc = hookmetamethod(game, "__namecall", function(self, ...)
-            if isSilentAimActive()
-                and getnamecallmethod() == "FireServer"
-                and typeof(self) == "Instance"
-                and self.Name == "CreateProjectile"
-            then
-                local shot = select(1, ...)
-                if shot then pcall(function() applyAim(shot) end) end
-            end
-            return oldNc(self, ...)
-        end)
     end)
 end
 
 --==============================================================
---  FOV ring (лёгкий — только позиция)
+--  FOV-кольцо
 --==============================================================
-local fovGui = Instance.new("ScreenGui")
-fovGui.Name           = "CritterFOV"
-fovGui.ResetOnSpawn   = false
-fovGui.IgnoreGuiInset = true
-fovGui.DisplayOrder   = 10000
-pcall(function() fovGui.Parent = CoreGui end)
-if not fovGui.Parent then fovGui.Parent = plr:WaitForChild("PlayerGui") end
+local fovCircle
+do
+    local pgui = plr:WaitForChild("PlayerGui")
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "CritterFOV"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.DisplayOrder = 100
+    sg.Parent = pgui
 
-local fovCircle = Instance.new("Frame")
-fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-fovCircle.BackgroundTransparency = 1
-fovCircle.BorderSizePixel = 0
-fovCircle.Visible = false
-fovCircle.Parent = fovGui
+    fovCircle = Instance.new("Frame")
+    fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+    fovCircle.BackgroundTransparency = 1
+    fovCircle.BorderSizePixel = 0
+    fovCircle.Visible = false
+    fovCircle.Parent = sg
 
-local fovStroke = Instance.new("UIStroke")
-fovStroke.Thickness = 1.5
-fovStroke.Color = Color3.fromRGB(255, 255, 255)
-fovStroke.Transparency = 0.3
-fovStroke.Parent = fovCircle
+    local st = Instance.new("UIStroke")
+    st.Thickness = 1.5
+    st.Color = Color3.fromRGB(255, 255, 255)
+    st.Transparency = 0.3
+    st.Parent = fovCircle
 
-Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
+    local cr = Instance.new("UICorner")
+    cr.CornerRadius = UDim.new(1, 0)
+    cr.Parent = fovCircle
 
-local function setFovRadius(r)
-    local d = math.max(8, r * 2)
-    fovCircle.Size = UDim2.fromOffset(d, d)
-end
-setFovRadius(Settings.FOVRadius)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        fovLastTouchPos = Vector2.new(input.Position.X, input.Position.Y)
+    local function setR(r)
+        local d = math.max(8, r * 2)
+        fovCircle.Size = UDim2.fromOffset(d, d)
     end
-end)
+    setR(S.FOVRadius)
+    _G.__critterSetFOV = setR
 
--- обновляем позицию кольца в RenderStepped (это самое дешёвое — просто UDim2)
-RunService.RenderStepped:Connect(function()
-    local show = Settings.ShowFOVCircle and isSilentAimActive()
-    fovCircle.Visible = show
-    if show then
-        local c = workspace.CurrentCamera
-        if c then
-            local center = getFovScreenCenter(c)
-            fovCircle.Position = UDim2.fromOffset(center.X, center.Y)
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            touchPos = Vector2.new(input.Position.X, input.Position.Y)
         end
-    end
-end)
+    end)
+
+    RunService.RenderStepped:Connect(function()
+        local show = S.ShowFOV and aimActive()
+        fovCircle.Visible = show
+        if show then
+            local cam = workspace.CurrentCamera
+            if cam then
+                local c = fovCenter(cam)
+                fovCircle.Position = UDim2.fromOffset(c.X, c.Y)
+            end
+        end
+    end)
+end
 
 --==============================================================
 --  GUI
 --==============================================================
-local gui = Instance.new("ScreenGui")
-gui.Name         = "CritterAimGUI"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 9999
-pcall(function() gui.Parent = CoreGui end)
-if not gui.Parent then gui.Parent = plr:WaitForChild("PlayerGui") end
+do
+    local pgui = plr:WaitForChild("PlayerGui")
 
-local main = Instance.new("Frame")
-main.Size             = UDim2.fromOffset(240, 380)
-main.Position         = UDim2.new(0, 20, 0, 100)
-main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
-main.BorderSizePixel  = 0
-main.Active           = true
-main.Draggable        = true
-main.Parent           = gui
-Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "CritterAim"
+    gui.ResetOnSpawn = false
+    gui.Parent = pgui
 
-local stroke = Instance.new("UIStroke", main)
-stroke.Color = Color3.fromRGB(80, 80, 110)
-stroke.Thickness = 1
+    local main = Instance.new("Frame")
+    main.Size = UDim2.fromOffset(240, 380)
+    main.Position = UDim2.new(0, 20, 0, 100)
+    main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.Draggable = true
+    main.Parent = gui
+    local mc = Instance.new("UICorner")
+    mc.CornerRadius = UDim.new(0, 10)
+    mc.Parent = main
 
-local title = Instance.new("TextLabel")
-title.Size             = UDim2.new(1, 0, 0, 34)
-title.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
-title.BorderSizePixel  = 0
-title.Text             = "  Critter Aim"
-title.TextColor3       = Color3.fromRGB(255, 255, 255)
-title.Font             = Enum.Font.GothamBold
-title.TextSize         = 15
-title.TextXAlignment   = Enum.TextXAlignment.Left
-title.Parent           = main
-Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(80, 80, 110)
+    st.Thickness = 1
+    st.Parent = main
 
-local minimizeBtn = Instance.new("TextButton")
-minimizeBtn.Size             = UDim2.fromOffset(24, 24)
-minimizeBtn.Position         = UDim2.new(1, -30, 0, 5)
-minimizeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-minimizeBtn.BorderSizePixel  = 0
-minimizeBtn.Text             = "—"
-minimizeBtn.TextColor3       = Color3.fromRGB(230, 230, 230)
-minimizeBtn.Font             = Enum.Font.GothamBold
-minimizeBtn.TextSize         = 14
-minimizeBtn.Parent           = main
-Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 5)
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 34)
+    title.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
+    title.BorderSizePixel = 0
+    title.Text = "  Critter Aim"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 15
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = main
+    local tc = Instance.new("UICorner")
+    tc.CornerRadius = UDim.new(0, 10)
+    tc.Parent = title
 
-local scroll = Instance.new("ScrollingFrame")
-scroll.Size                  = UDim2.new(1, -10, 1, -44)
-scroll.Position              = UDim2.new(0, 5, 0, 39)
-scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel       = 0
-scroll.ScrollBarThickness    = 3
-scroll.ScrollBarImageColor3  = Color3.fromRGB(90, 90, 120)
-scroll.CanvasSize            = UDim2.new(0, 0, 0, 0)
-scroll.AutomaticCanvasSize   = Enum.AutomaticSize.Y
-scroll.Parent                = main
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.fromOffset(24, 24)
+    minBtn.Position = UDim2.new(1, -30, 0, 5)
+    minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    minBtn.BorderSizePixel = 0
+    minBtn.Text = "—"
+    minBtn.TextColor3 = Color3.fromRGB(230, 230, 230)
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 14
+    minBtn.Parent = main
+    local mbc = Instance.new("UICorner")
+    mbc.CornerRadius = UDim.new(0, 5)
+    mbc.Parent = minBtn
 
-local layout = Instance.new("UIListLayout")
-layout.Padding   = UDim.new(0, 6)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent    = scroll
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -10, 1, -44)
+    scroll.Position = UDim2.new(0, 5, 0, 39)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3
+    scroll.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 120)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 600)
+    scroll.Parent = main
 
-local function section(text)
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1, 0, 0, 18)
-    l.BackgroundTransparency = 1
-    l.Text = text
-    l.TextColor3 = Color3.fromRGB(140, 160, 220)
-    l.Font = Enum.Font.GothamBold
-    l.TextSize = 11
-    l.TextXAlignment = Enum.TextXAlignment.Left
-    l.Parent = scroll
-end
+    local lay = Instance.new("UIListLayout")
+    lay.Padding = UDim.new(0, 6)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+    lay.Parent = scroll
 
-local function toggle(text, default, cb)
-    local btn = Instance.new("TextButton")
-    btn.Size             = UDim2.new(1, 0, 0, 30)
-    btn.BackgroundColor3 = default and Color3.fromRGB(55, 120, 65) or Color3.fromRGB(44, 44, 56)
-    btn.BorderSizePixel  = 0
-    btn.Text             = "  " .. text
-    btn.TextColor3       = Color3.fromRGB(230, 230, 235)
-    btn.Font             = Enum.Font.Gotham
-    btn.TextSize         = 13
-    btn.TextXAlignment   = Enum.TextXAlignment.Left
-    btn.AutoButtonColor  = false
-    btn.Parent           = scroll
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    local state = default
-    btn.MouseButton1Click:Connect(function()
-        state = not state
-        btn.BackgroundColor3 = state and Color3.fromRGB(55, 120, 65) or Color3.fromRGB(44, 44, 56)
-        cb(state)
-    end)
-    return btn
-end
-
-local function slider(text, mn, mx, default, step, cb)
-    local holder = Instance.new("Frame")
-    holder.Size             = UDim2.new(1, 0, 0, 48)
-    holder.BackgroundColor3 = Color3.fromRGB(38, 38, 48)
-    holder.BorderSizePixel  = 0
-    holder.Parent           = scroll
-    Instance.new("UICorner", holder).CornerRadius = UDim.new(0, 6)
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -12, 0, 20)
-    label.Position = UDim2.new(0, 8, 0, 4)
-    label.BackgroundTransparency = 1
-    label.TextColor3 = Color3.fromRGB(230, 230, 235)
-    label.Font = Enum.Font.Gotham
-    label.TextSize = 12
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = holder
-
-    local bar = Instance.new("Frame")
-    bar.Size             = UDim2.new(1, -20, 0, 8)
-    bar.Position         = UDim2.new(0, 10, 0, 32)
-    bar.BackgroundColor3 = Color3.fromRGB(62, 62, 78)
-    bar.BorderSizePixel  = 0
-    bar.Parent           = holder
-    Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
-
-    local fill = Instance.new("Frame")
-    fill.Size             = UDim2.new((default - mn) / (mx - mn), 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(90, 160, 255)
-    fill.BorderSizePixel  = 0
-    fill.Parent           = bar
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
-
-    local isFloat = step < 1
-    local function fmt(v)
-        if isFloat then return string.format("%.2f", v) end
-        return tostring(math.floor(v + 0.5))
+    local function section(txt)
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, 0, 0, 18)
+        l.BackgroundTransparency = 1
+        l.Text = txt
+        l.TextColor3 = Color3.fromRGB(140, 160, 220)
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = 11
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Parent = scroll
     end
-    label.Text = text .. ": " .. fmt(default)
 
-    local dragging = false
-    local function update(x)
-        local rel = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-        local val = mn + (mx - mn) * rel
-        val = math.floor(val / step + 0.5) * step
-        fill.Size = UDim2.new((val - mn) / (mx - mn), 0, 1, 0)
-        label.Text = text .. ": " .. fmt(val)
-        cb(val)
+    local function toggle(txt, def, cb)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, 0, 0, 30)
+        b.BackgroundColor3 = def and Color3.fromRGB(55, 120, 65) or Color3.fromRGB(44, 44, 56)
+        b.BorderSizePixel = 0
+        b.Text = "  " .. txt
+        b.TextColor3 = Color3.fromRGB(230, 230, 235)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 13
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.AutoButtonColor = false
+        b.Parent = scroll
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 6)
+        c.Parent = b
+        local state = def
+        b.MouseButton1Click:Connect(function()
+            state = not state
+            b.BackgroundColor3 = state and Color3.fromRGB(55, 120, 65) or Color3.fromRGB(44, 44, 56)
+            cb(state)
+        end)
     end
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            update(input.Position.X)
+
+    local function slider(txt, mn, mx, def, step, cb)
+        local h = Instance.new("Frame")
+        h.Size = UDim2.new(1, 0, 0, 48)
+        h.BackgroundColor3 = Color3.fromRGB(38, 38, 48)
+        h.BorderSizePixel = 0
+        h.Parent = scroll
+        local hc = Instance.new("UICorner")
+        hc.CornerRadius = UDim.new(0, 6)
+        hc.Parent = h
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -12, 0, 20)
+        lbl.Position = UDim2.new(0, 8, 0, 4)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(230, 230, 235)
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextSize = 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Parent = h
+
+        local bar = Instance.new("Frame")
+        bar.Size = UDim2.new(1, -20, 0, 8)
+        bar.Position = UDim2.new(0, 10, 0, 32)
+        bar.BackgroundColor3 = Color3.fromRGB(62, 62, 78)
+        bar.BorderSizePixel = 0
+        bar.Parent = h
+        local bc = Instance.new("UICorner")
+        bc.CornerRadius = UDim.new(1, 0)
+        bc.Parent = bar
+
+        local fill = Instance.new("Frame")
+        fill.Size = UDim2.new((def - mn) / (mx - mn), 0, 1, 0)
+        fill.BackgroundColor3 = Color3.fromRGB(90, 160, 255)
+        fill.BorderSizePixel = 0
+        fill.Parent = bar
+        local fc = Instance.new("UICorner")
+        fc.CornerRadius = UDim.new(1, 0)
+        fc.Parent = fill
+
+        local isF = step < 1
+        local function fmt(v)
+            if isF then return string.format("%.2f", v) end
+            return tostring(math.floor(v + 0.5))
         end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            update(input.Position.X)
+        lbl.Text = txt .. ": " .. fmt(def)
+
+        local drag = false
+        local function upd(x)
+            local ax = bar.AbsolutePosition.X
+            local aw = bar.AbsoluteSize.X
+            if aw < 1 then return end
+            local rel = (x - ax) / aw
+            if rel < 0 then rel = 0 end
+            if rel > 1 then rel = 1 end
+            local val = mn + (mx - mn) * rel
+            val = math.floor(val / step + 0.5) * step
+            fill.Size = UDim2.new((val - mn) / (mx - mn), 0, 1, 0)
+            lbl.Text = txt .. ": " .. fmt(val)
+            cb(val)
         end
+
+        bar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                drag = true
+                upd(input.Position.X)
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if drag and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+                upd(input.Position.X)
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                drag = false
+            end
+        end)
+    end
+
+    local minimized = false
+    minBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        scroll.Visible = not minimized
+        main.Size = minimized and UDim2.fromOffset(240, 34) or UDim2.fromOffset(240, 380)
+        minBtn.Text = minimized and "+" or "—"
     end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
+
+    section("— Targeting —")
+    toggle("Silent Aim", S.SilentAim, function(v) S.SilentAim = v end)
+    toggle("Auto Shoot", S.AutoShoot, function(v) S.AutoShoot = v end)
+    toggle("Target ALL Critters", S.AllCritters, function(v) S.AllCritters = v end)
+
+    section("— Hitbox —")
+    toggle("Expand Hitboxes", S.HitboxEnabled, function(v) S.HitboxEnabled = v end)
+    toggle("Show Hitbox", S.HitboxVisuals, function(v) S.HitboxVisuals = v end)
+    toggle("Bow Only", S.HitboxBowOnly, function(v) S.HitboxBowOnly = v end)
+    slider("Hitbox Size", 2, 15, S.HitboxSize, 1, function(v) S.HitboxSize = v end)
+
+    section("— FOV —")
+    toggle("Show FOV Circle", S.ShowFOV, function(v) S.ShowFOV = v end)
+    toggle("Move FOV", S.MoveFOV, function(v) S.MoveFOV = v end)
+    slider("FOV Radius", 30, 800, S.FOVRadius, 5, function(v)
+        S.FOVRadius = v
+        if _G.__critterSetFOV then _G.__critterSetFOV(v) end
     end)
+
+    section("— Prediction —")
+    slider("Lead Mult", 0, 5, S.LeadMult, 0.1, function(v) S.LeadMult = v end)
+
+    section("— Debug —")
+    toggle("Debug Prints", S.Debug, function(v) S.Debug = v end)
 end
-
-local minimized = false
-minimizeBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    scroll.Visible = not minimized
-    main.Size = minimized and UDim2.fromOffset(240, 34) or UDim2.fromOffset(240, 380)
-    minimizeBtn.Text = minimized and "+" or "—"
-end)
-
---=== Build UI ===
-section("— Targeting —")
-toggle("Silent Aim On Critters", Settings.SilentAimOnCritters, function(v) Settings.SilentAimOnCritters = v end)
-toggle("Auto Shoot", Settings.AutoShoot, function(v) Settings.AutoShoot = v end)
-toggle("Target ALL Critters", Settings.AllCritters, function(v) Settings.AllCritters = v end)
-
-section("— Hitbox —")
-toggle("Expand Hitboxes", Settings.HitboxEnabled, function(v) Settings.HitboxEnabled = v end)
-toggle("Show Hitbox", Settings.HitboxVisuals, function(v) Settings.HitboxVisuals = v end)
-toggle("Bow Only", Settings.HitboxBowOnly, function(v) Settings.HitboxBowOnly = v end)
-slider("Hitbox Size", 2, 15, Settings.HitboxSize, 1, function(v) Settings.HitboxSize = v end)
-
-section("— FOV —")
-toggle("Show FOV Circle", Settings.ShowFOVCircle, function(v) Settings.ShowFOVCircle = v end)
-toggle("Move FOV", Settings.MoveFOV, function(v) Settings.MoveFOV = v end)
-slider("FOV Radius", 30, 800, Settings.FOVRadius, 5, function(v)
-    Settings.FOVRadius = v
-    setFovRadius(v)
-end)
-
-section("— Prediction —")
-slider("Lead Mult", 0, 5, Settings.SilentAimLeadMult, 0.1, function(v) Settings.SilentAimLeadMult = v end)
-
-section("— Debug —")
-toggle("Debug Prints", Settings.Debug, function(v) Settings.Debug = v end)
 
 print("[Critter Aim] loaded")
