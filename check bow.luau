@@ -1,6 +1,5 @@
 --==============================================================
---  Critter Aim + Hitbox  (standalone)
---  Targets: workspace.Critters
+--  Critter Aim + Hitbox  (fast, standalone)
 --==============================================================
 
 local Players             = game:GetService("Players")
@@ -16,43 +15,52 @@ local plr = Players.LocalPlayer
 --  Settings
 --==============================================================
 local Settings = {
-    -- Targeting
     SilentAimOnCritters = false,
     AutoShoot           = false,
-    AllCritters         = true,      -- true = бить всех криттеров
-    SelectedCritters    = {},        -- name -> true (используется если AllCritters=false)
+    AllCritters         = true,
+    SelectedCritters    = {},
 
-    -- Prediction
     SilentAimLeadMult   = 1.0,
     SilentAimFlatCap    = 4,
     SilentAimHighArcCap = 1.5,
+    TargetPart          = "HumanoidRootPart",
 
-    -- Hitbox
     HitboxEnabled       = false,
     HitboxVisuals       = false,
     HitboxBowOnly       = false,
     HitboxSize          = 7,
 
-    -- FOV
     ShowFOVCircle       = false,
     FOVRadius           = 120,
     MoveFOV             = false,
+
+    Debug               = false,
 }
 
 --==============================================================
---  Runtime state
+--  Runtime
 --==============================================================
-local velHistory          = {}
-local fovLastTouchPos     = nil
-local restoreOrigNew      = nil
+local velHistory       = {}
+local fovLastTouchPos  = nil
+local cachedCritters   = {}
+local lastCritterRefresh = 0
+local hitboxAccum      = 0
+local visualAccum      = 0
+local currentTarget    = nil
+local currentTargetModel = nil
 
 --==============================================================
 --  Critter helpers
 --==============================================================
-local function collectCritters()
+local function refreshCritters()
     local folder = workspace:FindFirstChild("Critters")
-    if not folder then return {} end
-    return folder:GetChildren()
+    cachedCritters = folder and folder:GetChildren() or {}
+    -- отчистка мусора из velHistory
+    local alive = {}
+    for _, c in ipairs(cachedCritters) do alive[c] = true end
+    for m in pairs(velHistory) do
+        if not alive[m] then velHistory[m] = nil end
+    end
 end
 
 local function critterAlive(c)
@@ -62,31 +70,25 @@ local function critterAlive(c)
     return true
 end
 
-local function critterName(c)
-    return c and c.Name or ""
-end
+local function critterName(c) return c and c.Name or "" end
 
 local function critterPart(c)
     if not c then return nil end
-    local p = c:FindFirstChild("HumanoidRootPart")
-        or c:FindFirstChild("Head")
-        or c:FindFirstChild("UpperTorso")
-        or c:FindFirstChild("Torso")
+    local p = c:FindFirstChild(Settings.TargetPart)
+    if p and p:IsA("BasePart") then return p end
+    p = c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head") or c:FindFirstChild("Torso")
     if p and p:IsA("BasePart") then return p end
     return c:FindFirstChildWhichIsA("BasePart", true)
 end
 
 local function wantsCritter(name)
     if Settings.AllCritters then return true end
-    if type(Settings.SelectedCritters) ~= "table" then return false end
-    return Settings.SelectedCritters[name] == true
+    return type(Settings.SelectedCritters) == "table" and Settings.SelectedCritters[name] == true
 end
 
 local function hasCritterSelection()
     if Settings.AllCritters then return true end
-    for _, v in pairs(Settings.SelectedCritters) do
-        if v then return true end
-    end
+    for _, v in pairs(Settings.SelectedCritters) do if v then return true end end
     return false
 end
 
@@ -108,7 +110,7 @@ local function isHoldingBow()
 end
 
 --==============================================================
---  Projectile modules
+--  Item / projectile modules
 --==============================================================
 local ProjectileClass, ItemData, ItemIDs
 pcall(function()
@@ -145,33 +147,24 @@ local function getItemRow(toolID, projectileName)
         local name = ItemIDs[id] or ItemIDs[tostring(id)]
         if name and ItemData[name] then return ItemData[name] end
     end
-    if projectileName and ItemData[projectileName] then
-        return ItemData[projectileName]
-    end
+    if projectileName and ItemData[projectileName] then return ItemData[projectileName] end
     return nil
 end
 
 local function solveTrajectory(origin, vm, targetPos, gravityVec)
-    local G      = -gravityVec.Y
+    local G = -gravityVec.Y
     local direct = (targetPos - origin).Unit
-    if G <= 0 or vm <= 0 then
-        return direct, 0, 0, false, false
-    end
-    local d    = targetPos - origin
-    local Dxz  = Vector2.new(d.X, d.Z).Magnitude
-    if Dxz < 8 then
-        return direct, 0, d.Magnitude / vm, true, false
-    end
+    if G <= 0 or vm <= 0 then return direct, 0, 0, false, false end
+    local d   = targetPos - origin
+    local Dxz = Vector2.new(d.X, d.Z).Magnitude
+    if Dxz < 8 then return direct, 0, d.Magnitude / vm, true, false end
     local v2   = vm * vm
     local disc = v2 * v2 - G * (G * Dxz * Dxz + 2 * d.Y * v2)
-    if disc < 0 then
-        return direct, 0, d.Magnitude / vm, false, false
-    end
-    local sq        = math.sqrt(disc)
+    if disc < 0 then return direct, 0, d.Magnitude / vm, false, false end
+    local sq = math.sqrt(disc)
     local highAngle = math.atan((v2 + sq) / (G * Dxz))
     local lowAngle  = math.atan((v2 - sq) / (G * Dxz))
-    local angle     = lowAngle
-    local isHighArc = false
+    local angle, isHighArc = lowAngle, false
     if targetPos.Y - origin.Y > 100 then
         angle, isHighArc = highAngle, true
     elseif angle ~= angle or math.abs(angle) > math.abs(highAngle) then
@@ -184,51 +177,71 @@ local function solveTrajectory(origin, vm, targetPos, gravityVec)
     end
     flatDir = flatDir.Unit
     local dir = (flatDir * math.cos(angle) + Vector3.new(0, math.sin(angle), 0)).Unit
-    local horizontalSpeed = vm * math.cos(angle)
-    local flightTime = (math.abs(horizontalSpeed) < 1e-6)
+    local hSpeed = vm * math.cos(angle)
+    local flightTime = (math.abs(hSpeed) < 1e-6)
         and (d.Magnitude / vm)
-        or math.min(Dxz / horizontalSpeed, 10)
+        or math.min(Dxz / hSpeed, 10)
     return dir, angle, flightTime, true, isHighArc
 end
 
-local function predictPosition(origin, targetPos, targetModel, targetPart, vm, gravityVec)
-    local leadMult = Settings.SilentAimLeadMult or 1
-    local vel
-    local hist = velHistory[targetModel]
+-- Честный прогноз: используем AssemblyLinearVelocity как ground truth,
+-- а историю — только если она "свежее" и совпадает по направлению.
+local function getTargetVelocity(model, part)
+    if part and part.AssemblyLinearVelocity.Magnitude > 1 then
+        return Vector3.new(part.AssemblyLinearVelocity.X, 0, part.AssemblyLinearVelocity.Z)
+    end
+    local hist = velHistory[model]
     if hist then
-        vel = Vector3.new(hist.vel.X, 0, hist.vel.Z) * leadMult
-    else
-        local rv = targetPart.AssemblyLinearVelocity
-        vel = Vector3.new(rv.X, 0, rv.Z) * leadMult
+        return Vector3.new(hist.vel.X, 0, hist.vel.Z)
     end
-    local dist       = (targetPos - origin).Magnitude
-    local iterations = (dist > 150 and 8) or (dist > 75 and 6) or 4
-    local flatCap    = Settings.SilentAimFlatCap or 4
-    local highCap    = Settings.SilentAimHighArcCap or 1.5
-    local predicted  = targetPos
-    for _ = 1, iterations do
-        local _, _, flightTime, _, isHighArc =
-            solveTrajectory(origin, vm, predicted, gravityVec)
-        flightTime = math.min(flightTime, isHighArc and highCap or flatCap)
-        predicted  = targetPos + vel * flightTime
-    end
-    return predicted
+    return Vector3.zero
 end
 
+local function predictAimTime(origin, targetPos, targetVel, vm, gravityVec)
+    local leadMult = Settings.SilentAimLeadMult or 1
+    local flatCap  = Settings.SilentAimFlatCap or 4
+    local highCap  = Settings.SilentAimHighArcCap or 1.5
+    local dist = (targetPos - origin).Magnitude
+    local iterations = dist > 150 and 10 or (dist > 75 and 8 or 5)
+
+    local predicted = targetPos
+    local dir
+    for _ = 1, iterations do
+        local _, _, flightTime, _, isHighArc = solveTrajectory(origin, vm, predicted, gravityVec)
+        flightTime = math.min(flightTime, isHighArc and highCap or flatCap)
+        predicted = targetPos + targetVel * leadMult * flightTime
+    end
+    dir = select(1, solveTrajectory(origin, vm, predicted, gravityVec))
+    return dir, predicted
+end
+
+--==============================================================
+--  Compute aim
+--==============================================================
 local function computeAim(origin, targetPart, targetModel, projectileObject)
     local toolID         = projectileObject.toolID
     local projectileName = projectileObject.projectileName
-    local item     = getItemRow(toolID, projectileName)
+    local item = getItemRow(toolID, projectileName)
     local projItem = (type(ItemData) == "table" and projectileName and ItemData[projectileName]) or nil
+
     local baseSpeed = (item and tonumber(item.velocityMagnitude))
         or speedFromCurve((targetPart.Position - origin).Magnitude)
     local addVel  = (projItem and tonumber(projItem.additionalVelocity)) or 0
     local vm      = baseSpeed + addVel
     local addGrav = (projItem and tonumber(projItem.additionalGravity)) or 0
     local gravity = Vector3.new(0, -122.2 + addGrav, 0)
-    local targetPos = targetPart.Position + Vector3.new(0, 0.1, 0)
-    local predicted = predictPosition(origin, targetPos, targetModel, targetPart, vm, gravity)
-    return select(1, solveTrajectory(origin, vm, predicted, gravity))
+
+    local targetPos = targetPart.Position + Vector3.new(0, 0.2, 0)
+    local targetVel = getTargetVelocity(targetModel, targetPart)
+    local dir = predictAimTime(origin, targetPos, targetVel, vm, gravity)
+
+    if Settings.Debug then
+        print(string.format(
+            "[CritterAim] vm=%.1f grav=%.1f dist=%.1f tVel=%.1f",
+            vm, gravity.Y, (targetPos - origin).Magnitude, targetVel.Magnitude
+        ))
+    end
+    return dir
 end
 
 --==============================================================
@@ -240,9 +253,7 @@ end
 
 local function getFovScreenCenter(c)
     if Settings.MoveFOV then
-        if UserInputService.TouchEnabled
-            and not UserInputService.KeyboardEnabled
-            and fovLastTouchPos then
+        if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled and fovLastTouchPos then
             return fovLastTouchPos
         end
         local m = UserInputService:GetMouseLocation()
@@ -254,8 +265,7 @@ end
 
 local function getBestCritter(c)
     if not c then c = workspace.CurrentCamera end
-    if not c then return nil, nil end
-    if not hasCritterSelection() then return nil, nil end
+    if not c or not hasCritterSelection() then return nil, nil end
 
     local fovCenter = getFovScreenCenter(c)
     local fovRadius = Settings.FOVRadius or 120
@@ -263,7 +273,7 @@ local function getBestCritter(c)
     local worldW    = 0.00025
 
     local bestPart, bestModel, bestScore = nil, nil, math.huge
-    for _, critter in ipairs(collectCritters()) do
+    for _, critter in ipairs(cachedCritters) do
         if critterAlive(critter) and wantsCritter(critterName(critter)) then
             local part = critterPart(critter)
             if part then
@@ -290,9 +300,11 @@ end
 local function applyAim(self)
     if not isSilentAimActive() then return end
     if not isHoldingBow() then return end
-    local model, part = getBestCritter(workspace.CurrentCamera)
+    local model, part = currentTargetModel, currentTarget
+    if not (model and part and part.Parent) then
+        model, part = getBestCritter(workspace.CurrentCamera)
+    end
     if not (model and part) then return end
-    self.drawStrength = 1.0
     local origin = self.originCF and self.originCF.Position
     if not origin then return end
     local dir = computeAim(origin, part, model, self)
@@ -302,88 +314,101 @@ local function applyAim(self)
 end
 
 --==============================================================
---  Velocity tracking (for lead prediction)
+--  MAIN LOOP  (single Heartbeat — всё внутри)
 --==============================================================
+local lastAimCalc = 0
+
 RunService.Heartbeat:Connect(function(dt)
-    if not isSilentAimActive() then return end
-    local c = workspace.CurrentCamera
-    for _, critter in ipairs(collectCritters()) do
-        if critterAlive(critter) and wantsCritter(critterName(critter)) then
-            local part = critterPart(critter)
-            if part then
-                local entry = velHistory[critter]
-                if not entry then
-                    velHistory[critter] = { prev = part.Position, vel = Vector3.zero }
-                else
-                    local fv = (dt > 0) and ((part.Position - entry.prev) / dt) or Vector3.zero
-                    local dist = c and (part.Position - c.CFrame.Position).Magnitude or 100
-                    local alpha = math.clamp(0.5 - dist / 1000, 0.2, 0.5)
-                    entry.vel = entry.vel:Lerp(fv, alpha)
-                    entry.prev = part.Position
+    local now = tick()
+
+    -- 1) обновляем список криттеров раз в 0.3с
+    if now - lastCritterRefresh > 0.3 then
+        lastCritterRefresh = now
+        refreshCritters()
+    end
+
+    local aimActive = isSilentAimActive()
+    local hitboxOn  = Settings.HitboxEnabled or Settings.HitboxVisuals
+
+    -- 2) цель считаем только когда нужно: раз в 1/30с
+    if aimActive and now - lastAimCalc > 0.033 then
+        lastAimCalc = now
+        currentTargetModel, currentTarget = getBestCritter(workspace.CurrentCamera)
+    end
+
+    -- 3) трекинг скорости — только для тех, кто активен и в FOV-режиме
+    if aimActive then
+        local c = workspace.CurrentCamera
+        for _, critter in ipairs(cachedCritters) do
+            if critterAlive(critter) then
+                local part = critterPart(critter)
+                if part then
+                    local entry = velHistory[critter]
+                    if not entry then
+                        velHistory[critter] = { prev = part.Position, vel = Vector3.zero }
+                    else
+                        local fv = (dt > 0) and ((part.Position - entry.prev) / dt) or Vector3.zero
+                        entry.vel = Vector3.new(fv.X, 0, fv.Z)
+                        entry.prev = part.Position
+                    end
                 end
             end
         end
     end
-end)
 
---==============================================================
---  Hitbox expand / visual
---==============================================================
-local hitboxAccum = 0
-RunService.RenderStepped:Connect(function(dt)
-    if not Settings.HitboxEnabled and not Settings.HitboxVisuals then return end
-    hitboxAccum = hitboxAccum + dt
-    if hitboxAccum < 0.1 then return end
-    hitboxAccum = 0
+    -- 4) хитбокс — раз в 0.12с
+    if hitboxOn then
+        hitboxAccum = hitboxAccum + dt
+        if hitboxAccum >= 0.12 then
+            hitboxAccum = 0
+            local enabled = Settings.HitboxEnabled
+            local visuals = Settings.HitboxVisuals
+            if Settings.HitboxBowOnly and not isHoldingBow() then enabled = false end
 
-    local enabled = Settings.HitboxEnabled
-    local visuals = Settings.HitboxVisuals
-    if Settings.HitboxBowOnly and not isHoldingBow() then enabled = false end
+            local myChar = plr.Character
+            local myHrp  = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local baseSize = Settings.HitboxSize or 7
 
-    local myChar = plr.Character
-    local myHrp  = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    local baseSize = Settings.HitboxSize or 7
-
-    for _, critter in ipairs(collectCritters()) do
-        if critterAlive(critter) then
-            local part = critterPart(critter)
-            if part then
-                if enabled then
-                    local finalSize = baseSize
-                    if myHrp then
-                        local dist = (part.Position - myHrp.Position).Magnitude
-                        if dist < 40 then
-                            local alpha = math.clamp(dist / 40, 0.3, 1)
-                            finalSize = math.max(3, baseSize * alpha)
+            for _, critter in ipairs(cachedCritters) do
+                if critterAlive(critter) then
+                    local part = critterPart(critter)
+                    if part then
+                        if enabled then
+                            local finalSize = baseSize
+                            if myHrp then
+                                local dist = (part.Position - myHrp.Position).Magnitude
+                                if dist < 40 then
+                                    finalSize = math.max(3, baseSize * math.clamp(dist / 40, 0.3, 1))
+                                end
+                            end
+                            if math.abs(part.Size.X - finalSize) > 0.2 then
+                                part.Size = Vector3.new(finalSize, finalSize, finalSize)
+                                part.CanCollide = false
+                                part.Transparency = 1
+                            end
+                            if visuals then
+                                local box = part:FindFirstChild("CritterHitboxVisual")
+                                if not box then
+                                    box = Instance.new("SelectionBox")
+                                    box.Name = "CritterHitboxVisual"
+                                    box.Adornee = part
+                                    box.LineThickness = 0
+                                    box.Transparency = 1
+                                    box.SurfaceTransparency = 0.75
+                                    box.SurfaceColor3 = Color3.fromRGB(255, 50, 50)
+                                    box.Parent = part
+                                end
+                                box.Visible = true
+                            end
                         end
                     end
-                    if math.abs(part.Size.X - finalSize) > 0.2 then
-                        part.Size = Vector3.new(finalSize, finalSize, finalSize)
-                        part.CanCollide = false
-                        part.Transparency = 1
-                    end
-                    if visuals then
-                        local box = part:FindFirstChild("CritterHitboxVisual")
-                        if not box then
-                            box = Instance.new("SelectionBox")
-                            box.Name              = "CritterHitboxVisual"
-                            box.Adornee           = part
-                            box.LineThickness     = 0
-                            box.Transparency      = 1
-                            box.SurfaceTransparency = 0.75
-                            box.SurfaceColor3     = Color3.fromRGB(255, 50, 50)
-                            box.Parent            = part
-                        end
-                        box.Visible = true
-                    else
-                        local box = part:FindFirstChild("CritterHitboxVisual")
-                        if box then box.Visible = false end
-                    end
-                else
-                    local box = part:FindFirstChild("CritterHitboxVisual")
-                    if box then box:Destroy() end
                 end
             end
+        end
+    else
+        -- выключили — чистим один раз
+        if visualAccum ~= 0 then
+            visualAccum = 0
         end
     end
 end)
@@ -418,8 +443,6 @@ task.spawn(function()
             while tick() - t0 < FULL_CHARGE do
                 task.wait(POLL)
                 if not Settings.AutoShoot then break end
-                local m2, p2 = getBestCritter(workspace.CurrentCamera)
-                if not (m2 and p2) then break end
             end
             pcall(function()
                 VirtualInputManager:SendMouseButtonEvent(mx, my, 0, false, game, 1)
@@ -431,7 +454,7 @@ task.spawn(function()
 end)
 
 --==============================================================
---  Projectile hook
+--  Projectile hooks
 --==============================================================
 if ProjectileClass then
     local oldNew = ProjectileClass.new
@@ -440,7 +463,7 @@ if ProjectileClass then
         return oldNew(self, ...)
     end
     if hookfunction and type(hookfunction) == "function" then
-        restoreOrigNew = hookfunction(ProjectileClass.new, hookedNew)
+        hookfunction(ProjectileClass.new, hookedNew)
     else
         ProjectileClass.new = function(self, ...)
             return hookedNew(self, ...)
@@ -466,14 +489,13 @@ if typeof(hookmetamethod) == "function" and typeof(getnamecallmethod) == "functi
 end
 
 --==============================================================
---  FOV ring
+--  FOV ring (лёгкий — только позиция)
 --==============================================================
 local fovGui = Instance.new("ScreenGui")
-fovGui.Name            = "CritterFOV"
-fovGui.ResetOnSpawn    = false
-fovGui.IgnoreGuiInset  = true
-fovGui.DisplayOrder    = 10000
-fovGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+fovGui.Name           = "CritterFOV"
+fovGui.ResetOnSpawn   = false
+fovGui.IgnoreGuiInset = true
+fovGui.DisplayOrder   = 10000
 pcall(function() fovGui.Parent = CoreGui end)
 if not fovGui.Parent then fovGui.Parent = plr:WaitForChild("PlayerGui") end
 
@@ -490,9 +512,7 @@ fovStroke.Color = Color3.fromRGB(255, 255, 255)
 fovStroke.Transparency = 0.3
 fovStroke.Parent = fovCircle
 
-local fovCorner = Instance.new("UICorner")
-fovCorner.CornerRadius = UDim.new(1, 0)
-fovCorner.Parent = fovCircle
+Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
 
 local function setFovRadius(r)
     local d = math.max(8, r * 2)
@@ -506,6 +526,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
+-- обновляем позицию кольца в RenderStepped (это самое дешёвое — просто UDim2)
 RunService.RenderStepped:Connect(function()
     local show = Settings.ShowFOVCircle and isSilentAimActive()
     fovCircle.Visible = show
@@ -522,14 +543,14 @@ end)
 --  GUI
 --==============================================================
 local gui = Instance.new("ScreenGui")
-gui.Name           = "CritterAimGUI"
-gui.ResetOnSpawn   = false
-gui.DisplayOrder   = 9999
+gui.Name         = "CritterAimGUI"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 9999
 pcall(function() gui.Parent = CoreGui end)
 if not gui.Parent then gui.Parent = plr:WaitForChild("PlayerGui") end
 
 local main = Instance.new("Frame")
-main.Size             = UDim2.fromOffset(250, 400)
+main.Size             = UDim2.fromOffset(240, 380)
 main.Position         = UDim2.new(0, 20, 0, 100)
 main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 main.BorderSizePixel  = 0
@@ -567,38 +588,37 @@ minimizeBtn.Parent           = main
 Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 5)
 
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size               = UDim2.new(1, -10, 1, -44)
-scroll.Position           = UDim2.new(0, 5, 0, 39)
+scroll.Size                  = UDim2.new(1, -10, 1, -44)
+scroll.Position              = UDim2.new(0, 5, 0, 39)
 scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel    = 0
-scroll.ScrollBarThickness = 3
-scroll.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 120)
-scroll.CanvasSize         = UDim2.new(0, 0, 0, 0)
-scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-scroll.Parent             = main
+scroll.BorderSizePixel       = 0
+scroll.ScrollBarThickness    = 3
+scroll.ScrollBarImageColor3  = Color3.fromRGB(90, 90, 120)
+scroll.CanvasSize            = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize   = Enum.AutomaticSize.Y
+scroll.Parent                = main
 
 local layout = Instance.new("UIListLayout")
-layout.Padding     = UDim.new(0, 6)
-layout.SortOrder   = Enum.SortOrder.LayoutOrder
-layout.Parent      = scroll
+layout.Padding   = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent    = scroll
 
 local function section(text)
     local l = Instance.new("TextLabel")
-    l.Size               = UDim2.new(1, 0, 0, 18)
+    l.Size = UDim2.new(1, 0, 0, 18)
     l.BackgroundTransparency = 1
-    l.Text               = text
-    l.TextColor3         = Color3.fromRGB(140, 160, 220)
-    l.Font               = Enum.Font.GothamBold
-    l.TextSize           = 11
-    l.TextXAlignment     = Enum.TextXAlignment.Left
-    l.Parent             = scroll
+    l.Text = text
+    l.TextColor3 = Color3.fromRGB(140, 160, 220)
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = scroll
 end
 
 local function toggle(text, default, cb)
     local btn = Instance.new("TextButton")
     btn.Size             = UDim2.new(1, 0, 0, 30)
-    btn.BackgroundColor3 = default and Color3.fromRGB(55, 120, 65)
-        or Color3.fromRGB(44, 44, 56)
+    btn.BackgroundColor3 = default and Color3.fromRGB(55, 120, 65) or Color3.fromRGB(44, 44, 56)
     btn.BorderSizePixel  = 0
     btn.Text             = "  " .. text
     btn.TextColor3       = Color3.fromRGB(230, 230, 235)
@@ -608,12 +628,10 @@ local function toggle(text, default, cb)
     btn.AutoButtonColor  = false
     btn.Parent           = scroll
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-
     local state = default
     btn.MouseButton1Click:Connect(function()
         state = not state
-        btn.BackgroundColor3 = state and Color3.fromRGB(55, 120, 65)
-            or Color3.fromRGB(44, 44, 56)
+        btn.BackgroundColor3 = state and Color3.fromRGB(55, 120, 65) or Color3.fromRGB(44, 44, 56)
         cb(state)
     end)
     return btn
@@ -628,14 +646,14 @@ local function slider(text, mn, mx, default, step, cb)
     Instance.new("UICorner", holder).CornerRadius = UDim.new(0, 6)
 
     local label = Instance.new("TextLabel")
-    label.Size               = UDim2.new(1, -12, 0, 20)
-    label.Position           = UDim2.new(0, 8, 0, 4)
+    label.Size = UDim2.new(1, -12, 0, 20)
+    label.Position = UDim2.new(0, 8, 0, 4)
     label.BackgroundTransparency = 1
-    label.TextColor3         = Color3.fromRGB(230, 230, 235)
-    label.Font               = Enum.Font.Gotham
-    label.TextSize           = 12
-    label.TextXAlignment     = Enum.TextXAlignment.Left
-    label.Parent             = holder
+    label.TextColor3 = Color3.fromRGB(230, 230, 235)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = holder
 
     local bar = Instance.new("Frame")
     bar.Size             = UDim2.new(1, -20, 0, 8)
@@ -668,83 +686,56 @@ local function slider(text, mn, mx, default, step, cb)
         label.Text = text .. ": " .. fmt(val)
         cb(val)
     end
-
     bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             update(input.Position.X)
         end
     end)
     UserInputService.InputChanged:Connect(function(input)
-        if dragging
-            and (input.UserInputType == Enum.UserInputType.MouseMovement
-                or input.UserInputType == Enum.UserInputType.Touch) then
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             update(input.Position.X)
         end
     end)
     UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
         end
     end)
 end
 
--- Minimize
 local minimized = false
 minimizeBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
     scroll.Visible = not minimized
-    main.Size = minimized and UDim2.fromOffset(250, 34)
-        or UDim2.fromOffset(250, 400)
+    main.Size = minimized and UDim2.fromOffset(240, 34) or UDim2.fromOffset(240, 380)
     minimizeBtn.Text = minimized and "+" or "—"
 end)
 
 --=== Build UI ===
 section("— Targeting —")
-toggle("Silent Aim On Critters", Settings.SilentAimOnCritters, function(v)
-    Settings.SilentAimOnCritters = v
-end)
-toggle("Auto Shoot", Settings.AutoShoot, function(v)
-    Settings.AutoShoot = v
-end)
-toggle("Target ALL Critters", Settings.AllCritters, function(v)
-    Settings.AllCritters = v
-end)
+toggle("Silent Aim On Critters", Settings.SilentAimOnCritters, function(v) Settings.SilentAimOnCritters = v end)
+toggle("Auto Shoot", Settings.AutoShoot, function(v) Settings.AutoShoot = v end)
+toggle("Target ALL Critters", Settings.AllCritters, function(v) Settings.AllCritters = v end)
 
 section("— Hitbox —")
-toggle("Expand Hitboxes", Settings.HitboxEnabled, function(v)
-    Settings.HitboxEnabled = v
-end)
-toggle("Show Hitbox", Settings.HitboxVisuals, function(v)
-    Settings.HitboxVisuals = v
-end)
-toggle("Bow Only", Settings.HitboxBowOnly, function(v)
-    Settings.HitboxBowOnly = v
-end)
-slider("Hitbox Size", 2, 15, Settings.HitboxSize, 1, function(v)
-    Settings.HitboxSize = v
-end)
+toggle("Expand Hitboxes", Settings.HitboxEnabled, function(v) Settings.HitboxEnabled = v end)
+toggle("Show Hitbox", Settings.HitboxVisuals, function(v) Settings.HitboxVisuals = v end)
+toggle("Bow Only", Settings.HitboxBowOnly, function(v) Settings.HitboxBowOnly = v end)
+slider("Hitbox Size", 2, 15, Settings.HitboxSize, 1, function(v) Settings.HitboxSize = v end)
 
 section("— FOV —")
-toggle("Show FOV Circle", Settings.ShowFOVCircle, function(v)
-    Settings.ShowFOVCircle = v
-end)
-toggle("Move FOV", Settings.MoveFOV, function(v)
-    Settings.MoveFOV = v
-end)
+toggle("Show FOV Circle", Settings.ShowFOVCircle, function(v) Settings.ShowFOVCircle = v end)
+toggle("Move FOV", Settings.MoveFOV, function(v) Settings.MoveFOV = v end)
 slider("FOV Radius", 30, 800, Settings.FOVRadius, 5, function(v)
     Settings.FOVRadius = v
     setFovRadius(v)
 end)
 
 section("— Prediction —")
-slider("Lead Mult", 0, 5, Settings.SilentAimLeadMult, 0.1, function(v)
-    Settings.SilentAimLeadMult = v
-end)
+slider("Lead Mult", 0, 5, Settings.SilentAimLeadMult, 0.1, function(v) Settings.SilentAimLeadMult = v end)
 
---==============================================================
---  Notify
---==============================================================
-print("[Critter Aim] loaded — GUI в левом верхнем углу")
+section("— Debug —")
+toggle("Debug Prints", Settings.Debug, function(v) Settings.Debug = v end)
+
+print("[Critter Aim] loaded")
