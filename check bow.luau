@@ -1,13 +1,13 @@
 --==============================================================
---  Critter Aim + Hitbox  v2.1  (fixed hooks, no recursion)
+--  Critter Aim v3  —  без хука projectile.new
+--  Перезапусти Roblox полностью перед запуском!
 --==============================================================
 
--- ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА
-if _G.__CritterAimLoaded then
-    warn("[Critter Aim] уже загружено. Перезайди в игру чтобы перезапустить.")
+if _G.__CritterAimV3 then
+    warn("[Critter Aim] уже запущено")
     return
 end
-_G.__CritterAimLoaded = true
+_G.__CritterAimV3 = true
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -19,8 +19,6 @@ local plr = Players.LocalPlayer
 local VirtualInputManager
 pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
 
---==============================================================
---  Настройки
 --==============================================================
 local S = {
     SilentAim        = false,
@@ -43,9 +41,6 @@ local S = {
     Debug            = false,
 }
 
---==============================================================
---  Состояние
---==============================================================
 local critters     = {}
 local partCache    = {}
 local lastRefresh  = 0
@@ -56,8 +51,6 @@ local touchPos     = nil
 local curVel       = Vector3.new(0, 0, 0)
 local curPrevPos   = nil
 
---==============================================================
---  Криттеры
 --==============================================================
 local function refreshCritters()
     local f = workspace:FindFirstChild("Critters")
@@ -117,8 +110,6 @@ local function wantCritter(name)
 end
 
 --==============================================================
---  Лук
---==============================================================
 local BOW_WORDS = { "bow", "sling", "crossbow", "cannon", "ballista" }
 
 local function holdingBow()
@@ -134,15 +125,10 @@ local function holdingBow()
 end
 
 --==============================================================
---  Модули
---==============================================================
-local ProjClass, ItemData, ItemIDs
-pcall(function() ProjClass = require(ReplicatedStorage.Game.classes.projectile) end)
-pcall(function() ItemData  = require(ReplicatedStorage.Modules.ItemData) end)
-pcall(function() ItemIDs   = require(ReplicatedStorage.Modules.ItemIDS) end)
+local ItemData, ItemIDs
+pcall(function() ItemData = require(ReplicatedStorage.Modules.ItemData) end)
+pcall(function() ItemIDs  = require(ReplicatedStorage.Modules.ItemIDS) end)
 
---==============================================================
---  Баллистика
 --==============================================================
 local SPEED_CURVE = {
     {0, 430.16}, {494, 430.16}, {532, 424.46},
@@ -182,7 +168,6 @@ local function solveArc(origin, vm, target, gravity)
     local dist = diff.Magnitude
     if dist < 1e-4 then return Vector3.new(0, 0, -1), 0, false, false end
     local direct = diff / dist
-
     local G = -gravity.Y
     if G <= 0 or vm <= 0 then return direct, dist / math.max(vm, 1), false, false end
 
@@ -201,11 +186,9 @@ local function solveArc(origin, vm, target, gravity)
     local angle = lowAngle
     local highArc = false
     if diff.Y > 100 then
-        angle = highAngle
-        highArc = true
+        angle, highArc = highAngle, true
     elseif angle ~= angle or math.abs(angle) > math.abs(highAngle) then
-        angle = highAngle
-        highArc = true
+        angle, highArc = highAngle, true
     end
     if angle < -1.5 then angle = -1.5 end
     if angle > 1.55 then angle = 1.55 end
@@ -276,8 +259,6 @@ local function computeDir(origin, tPart, tModel, proj)
 end
 
 --==============================================================
---  Цель
---==============================================================
 local function aimActive()
     return S.SilentAim or S.AutoShoot
 end
@@ -329,12 +310,12 @@ local function findTarget(cam)
 end
 
 --==============================================================
---  applyAim
+--  applyAim — единственная точка, где мы правим снаряд
 --==============================================================
 local function applyAim(self)
+    if not self then return end
     if not aimActive() then return end
     if not holdingBow() then return end
-    if not self then return end
 
     local m, p = curTargetM, curTarget
     if not (m and p and p.Parent) then
@@ -342,88 +323,68 @@ local function applyAim(self)
     end
     if not (m and p) then return end
 
-    local origin = self.originCF and self.originCF.Position
+    -- originCF может быть под другим именем — ищем любое CFrame-поле
+    local origin
+    if self.originCF then
+        origin = self.originCF.Position
+    elseif self.origin then
+        origin = self.origin.Position
+    elseif self.position then
+        origin = self.position
+    end
     if not origin then return end
 
     local ok, dir = pcall(computeDir, origin, p, m, self)
-    if not ok or not dir or type(dir) ~= "Vector3" or dir.Magnitude < 1e-4 then return end
+    if not ok or type(dir) ~= "Vector3" or dir.Magnitude < 1e-4 then return end
 
-    self.originCF = CFrame.lookAt(origin, origin + dir)
+    if self.originCF then
+        self.originCF = CFrame.lookAt(origin, origin + dir)
+    elseif self.origin then
+        self.origin = CFrame.lookAt(origin, origin + dir)
+    else
+        self.direction = dir
+    end
 end
 
 --==============================================================
---  ХУК PROJECTILE.NEW  —  ИСПРАВЛЕНО
---==============================================================
-local hookDepth = 0
-local MAX_DEPTH = 3
-
-if ProjClass and type(ProjClass.new) == "function" then
-    pcall(function()
-        local orig
-
-        local function hookedNew(self, ...)
-            -- защита от бесконечной рекурсии
-            if hookDepth >= MAX_DEPTH then
-                return orig(self, ...)
-            end
-            hookDepth = hookDepth + 1
-
-            -- наш aim в pcall, чтобы НИКОГДА не сломать оригинал
-            pcall(applyAim, self)
-
-            local a, b, c, d, e, f, g, h
-            local ok, r1, r2, r3, r4, r5, r6, r7, r8 =
-                pcall(orig, self, ...)
-            hookDepth = hookDepth - 1
-
-            if ok then return r1, r2, r3, r4, r5, r6, r7, r8 end
-            return nil
-        end
-
-        if type(hookfunction) == "function" then
-            -- ВАЖНО: hookfunction ВОЗВРАЩАЕТ безопасный вызов оригинала
-            orig = hookfunction(ProjClass.new, hookedNew)
-        else
-            orig = ProjClass.new
-            ProjClass.new = hookedNew
-        end
-    end)
-end
-
---==============================================================
---  ХУК FireServer  —  тоже с защитой
+--  ЕДИНСТВЕННЫЙ хук — namecall на CreateProjectile:FireServer
+--  Без хука projectile.new — он и вызывал рекурсию
 --==============================================================
 if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
+    local ncActive = false
+
     pcall(function()
         local origNc
-        local ncDepth = 0
-        local NC_MAX = 3
-
         origNc = hookmetamethod(game, "__namecall", function(self, ...)
-            if ncDepth >= NC_MAX then
+            -- защита от рекурсии: если уже внутри — сразу к оригиналу
+            if ncActive then
                 return origNc(self, ...)
             end
-            ncDepth = ncDepth + 1
-            local ok, a, b, c, d, e, f, g, h = pcall(function()
-                if getnamecallmethod() == "FireServer"
-                    and typeof(self) == "Instance"
-                    and self.Name == "CreateProjectile"
-                    and aimActive()
-                then
-                    local shot = select(1, ...)
-                    if shot then pcall(applyAim, shot) end
+
+            local method = getnamecallmethod()
+            if method == "FireServer"
+                and typeof(self) == "Instance"
+                and self.Name == "CreateProjectile"
+                and aimActive()
+            then
+                ncActive = true
+                local ok, shot = pcall(function() return select(1, ...) end)
+                if ok and shot then
+                    pcall(applyAim, shot)
                 end
-                return origNc(self, ...)
-            end)
-            ncDepth = ncDepth - 1
-            if ok then return a, b, c, d, e, f, g, h end
-            return nil
+                ncActive = false
+            end
+
+            return origNc(self, ...)
         end)
+        print("[Critter Aim v3] namecall hook установлен")
     end)
+else
+    warn("[Critter Aim v3] hookmetamethod недоступен — silent aim не будет работать")
 end
 
 --==============================================================
---  Главный цикл — 20 Hz
+--  Главный цикл
 --==============================================================
 task.spawn(function()
     while true do
@@ -552,7 +513,7 @@ if VirtualInputManager then
 end
 
 --==============================================================
---  FOV-кольцо
+--  FOV ring
 --==============================================================
 do
     local sg = Instance.new("ScreenGui")
@@ -635,7 +596,7 @@ do
     title.Size = UDim2.new(1, 0, 0, 34)
     title.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
     title.BorderSizePixel = 0
-    title.Text = "  Critter Aim v2.1"
+    title.Text = "  Critter Aim v3"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 15
@@ -825,4 +786,4 @@ do
     toggle("Debug Prints", S.Debug, function(v) S.Debug = v end)
 end
 
-print("[Critter Aim v2.1] loaded — хуки исправлены")
+print("[Critter Aim v3] loaded — без хука projectile.new")
